@@ -218,7 +218,24 @@ jobs:
           for m in re.finditer(r'.*ksu_handle_stat\(&dfd, &fname, &\w+\);.*', new_text):
               print(m.group(0).strip())
           PY
-
+         
+            
+           - name: Diagnose namei.c partial-patch fallout
+          working-directory: kernel
+          run: |
+          echo "=== Context around line 3328 (may_create / dentry) ==="
+          sed -n '3290,3340p' fs/namei.c
+          echo ""
+          echo "=== Context around line 3966 (nd) ==="
+          sed -n '3930,3980p' fs/namei.c
+          echo ""
+          echo "=== Context around line 4638 (inode) ==="
+          sed -n '4600,4650p' fs/namei.c
+          echo ""
+          echo "=== Context around line 4825 (expected identifier) ==="
+          sed -n '4790,4840p' fs/namei.c
+    
+      
       - name: Enable KSU + SUSFS in defconfig
         working-directory: kernel
         run: |
