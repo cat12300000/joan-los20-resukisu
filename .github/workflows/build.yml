@@ -68,11 +68,19 @@ jobs:
           echo "=== Reject files (hunks that failed to apply) ==="
           find . -name "*.rej" | sort
           echo ""
-          echo "=== Reject file contents ==="
-          find . -name "*.rej" -exec echo "--- {} ---" \; -exec cat {} \;
-          echo ""
           echo "=== SUSFS_VERSION now readable? ==="
           grep -E '^#define SUSFS_VERSION' include/linux/susfs.h || echo "NOT FOUND"
+
+          echo ""
+          echo "=== Diagnosing susfs_is_current_proc_no_su (fs/open.c build failure) ==="
+          echo "--- context in fs/open.c around the call ---"
+          grep -n "susfs_is_current_proc_no_su" fs/open.c -B 15 -A 2
+          echo ""
+          echo "--- every occurrence of this symbol in the whole tree ---"
+          grep -rn "susfs_is_current_proc_no_su" --include="*.c" --include="*.h" . || echo "no other occurrences found"
+          echo ""
+          echo "--- is CONFIG_KSU_SUSFS_SUS_SU referenced near it in open.c? ---"
+          grep -n "CONFIG_KSU_SUSFS_SUS_SU" fs/open.c
 
       - name: Diagnose SUSFS integration check
         working-directory: kernel
