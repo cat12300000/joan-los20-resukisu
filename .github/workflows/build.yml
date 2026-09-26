@@ -60,8 +60,8 @@ jobs:
           cp -v /tmp/susfs4ksu/kernel_patches/fs/* fs/ || true
           cp -v /tmp/susfs4ksu/kernel_patches/include/linux/* include/linux/ || true
 
-          echo "=== Applying SUSFS 4.9 patch (with high fuzz) ==="
-          patch -p1 --fuzz=5 --forward < /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.9.patch || true
+          echo "=== Applying SUSFS 4.9 patch (fuzz=3 — safe, no bad fuzzy matches) ==="
+          patch -p1 --fuzz=3 -f < /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.9.patch || true
 
           echo "=== Adding susfs.o to fs/Makefile if missing ==="
           if ! grep -q "susfs.o" fs/Makefile; then
@@ -222,17 +222,11 @@ jobs:
       - name: Diagnose namei.c partial-patch fallout
         working-directory: kernel
         run: |
-          echo "=== Context around line 3328 (may_create / dentry) ==="
-          sed -n '3290,3340p' fs/namei.c
+          echo "=== Reject files present (expected: namei.c and stat.c) ==="
+          find . -name "*.rej" | sort
           echo ""
-          echo "=== Context around line 3966 (nd) ==="
-          sed -n '3930,3980p' fs/namei.c
-          echo ""
-          echo "=== Context around line 4638 (inode) ==="
-          sed -n '4600,4650p' fs/namei.c
-          echo ""
-          echo "=== Context around line 4825 (expected identifier) ==="
-          sed -n '4790,4840p' fs/namei.c
+          echo "=== Sanity: any leftover CONFIG_KSU_SUSFS_SUS_PATH block outside a function? (should be empty) ==="
+          grep -n "EXPORT_SYMBOL(page_symlink_inode_operations)" -A 6 fs/namei.c || true
 
       - name: Enable KSU + SUSFS in defconfig
         working-directory: kernel
