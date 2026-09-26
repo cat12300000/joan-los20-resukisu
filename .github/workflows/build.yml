@@ -39,7 +39,6 @@ jobs:
       - name: Integrate ReSukiSU
         working-directory: kernel
         run: |
-          # Use main (no susfs-dev branch exists)
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
       - name: Apply 4.4 SUSFS inline hooks
@@ -70,8 +69,6 @@ jobs:
           fi
 
           echo "=== Compatibility fix for susfs_is_current_proc_no_su ==="
-          # The inline-hooks script injects this call, but older 4.9 SUSFS
-          # may not declare it. Add a safe fallback if the symbol is missing.
           if ! grep -q "susfs_is_current_proc_no_su" include/linux/susfs.h 2>/dev/null; then
             cat >> include/linux/susfs.h << 'EOF'
 
@@ -85,7 +82,6 @@ static inline bool susfs_is_current_proc_no_su(void)
 EOF
           fi
 
-          # Ensure open.c can see the header
           if ! grep -q "linux/susfs.h" fs/open.c; then
             sed -i '1i #include <linux/susfs.h>' fs/open.c
           fi
@@ -99,26 +95,26 @@ EOF
         run: |
           CFG=arch/arm64/configs/lineageos_joan_defconfig
           cat >> "$CFG" << 'EOF'
-CONFIG_KSU=y
-CONFIG_KSU_MANUAL_HOOK=y
-# CONFIG_KSU_KPROBES_HOOK is not set
-# CONFIG_KSU_TRACEPOINT_HOOK is not set
-CONFIG_KSU_SUSFS=y
-CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
-CONFIG_KSU_SUSFS_SUS_PATH=y
-CONFIG_KSU_SUSFS_SUS_MOUNT=y
-CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
-CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
-CONFIG_KSU_SUSFS_SUS_KSTAT=y
-CONFIG_KSU_SUSFS_SUS_MAP=y
-CONFIG_KSU_SUSFS_TRY_UMOUNT=y
-CONFIG_KSU_SUSFS_SPOOF_UNAME=y
-CONFIG_KSU_SUSFS_ENABLE_LOG=y
-CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
-CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
-CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
-CONFIG_OVERLAY_FS=y
-EOF
+          CONFIG_KSU=y
+          CONFIG_KSU_MANUAL_HOOK=y
+          # CONFIG_KSU_KPROBES_HOOK is not set
+          # CONFIG_KSU_TRACEPOINT_HOOK is not set
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_OVERLAY_FS=y
+          EOF
 
       - name: Build Kernel with Clang
         working-directory: kernel
@@ -154,7 +150,6 @@ EOF
           git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git ak3
           rm -rf ak3/.git ak3/banner ak3/README*
           cp kernel/out/arch/arm64/boot/Image.gz-dtb ak3/
-          # Use your custom anykernel.sh if present in the repo root
           cp anykernel.sh ak3/anykernel.sh 2>/dev/null || true
           cd ak3
           zip -r9 ../AK3-LOS20-Joan_ReSukiSU-SUSFS.zip * -x '*.git*'
