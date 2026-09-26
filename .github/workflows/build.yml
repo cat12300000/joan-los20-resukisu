@@ -17,6 +17,19 @@ jobs:
             wget curl unzip python3 python3-pip device-tree-compiler \
             xz-utils ca-certificates build-essential
 
+      - name: Diagnose susfs4ksu branches/patches for kernel 4.4
+        run: |
+          echo "=== All branches in simonpunk/susfs4ksu ==="
+          git ls-remote --heads https://gitlab.com/simonpunk/susfs4ksu.git | awk -F'refs/heads/' '{print $2}'
+          echo ""
+          echo "=== Branches matching 4.4 / non-GKI-looking names ==="
+          git ls-remote --heads https://gitlab.com/simonpunk/susfs4ksu.git | awk -F'refs/heads/' '{print $2}' | grep -iE '4\.4|kernel-4|non-?gki|legacy' || echo "no obvious match"
+          echo ""
+          echo "=== Cloning master to inspect kernel_patches/ layout ==="
+          git clone --depth 1 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu-master
+          find /tmp/susfs4ksu-master/kernel_patches -maxdepth 2 -type f -name "*.patch" | sort
+          find /tmp/susfs4ksu-master/kernel_patches -maxdepth 2 -type d | sort
+
       - name: Toolchains
         run: |
           mkdir -p $HOME/tc
@@ -95,9 +108,9 @@ jobs:
       - name: Build
         working-directory: kernel
         run: |
-          # neutralize proton-clang's stale ld — it can't parse modern glibc's .relr.dyn,
-          # which breaks linking HOST tools like fixdep. Redirect it to the system linker.
-          SYS_LD="$(command -v ld)"
+          # force-resolve the REAL system ld, bypassing tc/clang/bin which $GITHUB_PATH
+          # already prepended earlier in the job for every step, not just this one.
+          SYS_LD="$(PATH=/usr/bin:/bin command -v ld)"
           echo "System ld resolved to: $SYS_LD"
           sudo ln -sf "$SYS_LD" "$HOME/tc/clang/bin/ld"
           ls -la "$HOME/tc/clang/bin/ld"
