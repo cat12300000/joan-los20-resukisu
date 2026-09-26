@@ -1,4 +1,4 @@
-name: Build joan LOS20 ReSukiSU+SUSFS
+- name: Build joan LOS20 ReSukiSU+SUSFS
 
 on:
   workflow_dispatch:
@@ -53,19 +53,19 @@ jobs:
         run: |
           echo "=== Cloning susfs4ksu source repository ==="
           git clone --depth 1 -b kernel-4.9 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
-
+          
           echo "=== Copying SUSFS core files ==="
           cp -v /tmp/susfs4ksu/kernel_patches/fs/* fs/
           cp -v /tmp/susfs4ksu/kernel_patches/include/linux/* include/linux/
-
+          
           echo "=== Patching Kernel Source with SUSFS 4.9 Patch ==="
           patch -p1 --fuzz=3 < /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.9.patch || true
-
+          
           echo "=== Adding susfs.o to fs/Makefile ==="
           if ! grep -q "susfs.o" fs/Makefile; then
             echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
           fi
-
+          
           echo "=== Verifying SUSFS Header setup ==="
           grep -E '^#define SUSFS_VERSION' include/linux/susfs.h || echo "WARNING: SUSFS Version Header Not Found"
 
@@ -74,32 +74,32 @@ jobs:
         run: |
           CFG=arch/arm64/configs/lineageos_joan_defconfig
           cat >> "$CFG" << 'EOF'
-CONFIG_KSU=y
-CONFIG_KSU_MANUAL_HOOK=y
-# CONFIG_KSU_KPROBES_HOOK is not set
-CONFIG_KSU_SUSFS=y
-CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
-CONFIG_KSU_SUSFS_SUS_PATH=y
-CONFIG_KSU_SUSFS_SUS_MOUNT=y
-CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
-CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
-CONFIG_KSU_SUSFS_SUS_KSTAT=y
-CONFIG_KSU_SUSFS_SUS_MAP=y
-CONFIG_KSU_SUSFS_TRY_UMOUNT=y
-CONFIG_KSU_SUSFS_SPOOF_UNAME=y
-CONFIG_KSU_SUSFS_ENABLE_LOG=y
-CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
-CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
-CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
-CONFIG_OVERLAY_FS=y
-EOF
+          CONFIG_KSU=y
+          CONFIG_KSU_MANUAL_HOOK=y
+          # CONFIG_KSU_KPROBES_HOOK is not set
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_OVERLAY_FS=y
+          EOF
 
       - name: Build Kernel with Clang
         working-directory: kernel
         run: |
           SYS_LD="$(PATH=/usr/bin:/bin command -v ld)"
           sudo ln -sf "$SYS_LD" "$HOME/tc/clang/bin/ld"
-
+          
           export PATH="$HOME/tc/clang/bin:$HOME/tc/gcc64/bin:$HOME/tc/gcc32/bin:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
@@ -113,7 +113,7 @@ EOF
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
-
+          
           mkdir -p out
           make O=out lineageos_joan_defconfig
           make O=out -j$(nproc) \
