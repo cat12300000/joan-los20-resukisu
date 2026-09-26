@@ -63,10 +63,8 @@ jobs:
           python3 << 'PY'
           import re
           from pathlib import Path
-
           p = Path("fs/dcache.c")
           text = p.read_text()
-
           block_re = re.compile(
               r"#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
               r"[ \t]*if \(dentry->d_inode && unlikely\(dentry->d_inode->i_state & INODE_STATE_SUS_PATH\).*\n"
@@ -76,7 +74,6 @@ jobs:
           )
           text, n = block_re.subn("", text)
           print(f"Removed {n} existing SUS_PATH continue-block(s)")
-
           if "linux/susfs_def.h" not in text:
               needle = "#include <linux/kasan.h>\n"
               if needle not in text:
@@ -86,7 +83,6 @@ jobs:
                   needle + "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n#include <linux/susfs_def.h>\n#endif\n",
                   1,
               )
-
           old_rcu = (
               "\t\tif (dentry->d_name.hash_len != hashlen)\n"
               "\t\t\tcontinue;\n"
@@ -111,7 +107,6 @@ jobs:
               raise SystemExit("ERROR: __d_lookup_rcu name-match pattern not found")
           text = text.replace(old_rcu, new_rcu, 1)
           print("Inserted SUS_PATH into __d_lookup_rcu name-match path")
-
           old_ok = "\t\t\tcase D_COMP_OK:\n\t\t\t\treturn dentry;"
           new_ok = (
               "\t\t\tcase D_COMP_OK:\n"
@@ -127,7 +122,6 @@ jobs:
               print("Inserted SUS_PATH into D_COMP_OK path")
           else:
               print("WARN: D_COMP_OK path not found")
-
           old_lookup = (
               "\t\tif (dentry->d_name.hash != hash)\n"
               "\t\t\tcontinue;\n"
@@ -153,10 +147,7 @@ jobs:
               print("__d_lookup already has SUS_PATH")
           else:
               raise SystemExit("ERROR: __d_lookup hash-check pattern not found")
-
           p.write_text(text)
-
-          # Guard: a continue for SUS_PATH must sit after a for/while in the same function
           src = p.read_text().splitlines()
           in_func = False
           loop_depth = 0
@@ -171,17 +162,14 @@ jobs:
                   continue
               if "hlist_bl_for_each_entry_rcu" in line or re.search(r"\bfor\s*\(", line) or re.search(r"\bwhile\s*\(", line):
                   loop_depth += 1
-              if line.strip() == "}" or line.strip() == "};":
-                  pass
               if "continue;" in line and "INODE_STATE_SUS_PATH" in "\n".join(src[max(0, i-8):i]):
-                  # look backwards for for_each
                   window = "\n".join(src[max(0, i-80):i])
                   if "hlist_bl_for_each_entry_rcu" not in window:
                       raise SystemExit(f"ERROR: continue still outside lookup loop around line {i}")
           print("dcache.c repaired and sanity-checked")
           PY
           echo "=== __d_lookup_rcu around SUS_PATH ==="
-          grep -n -n "INODE_STATE_SUS_PATH\|hlist_bl_for_each_entry_rcu\|__d_lookup" fs/dcache.c | head -40
+          grep -n "INODE_STATE_SUS_PATH\|hlist_bl_for_each_entry_rcu\|__d_lookup" fs/dcache.c | head -40
       - name: Remove broken SUS_PATH fragments from namei.c
         working-directory: kernel
         run: |
@@ -228,20 +216,17 @@ jobs:
         run: |
           python3 << 'PY'
           from pathlib import Path
-
           p = Path("fs/namei.c")
           text = p.read_text()
           cond_dentry = "dentry->d_inode && unlikely(dentry->d_inode->i_state & INODE_STATE_SUS_PATH) && likely(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC)"
           cond_inode = "unlikely(inode->i_state & INODE_STATE_SUS_PATH) && likely(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC)"
           cond_child = "child->d_inode && unlikely(child->d_inode->i_state & INODE_STATE_SUS_PATH) && likely(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC)"
           cond_path = "!retval && path->dentry && path->dentry->d_inode && unlikely(path->dentry->d_inode->i_state & INODE_STATE_SUS_PATH) && likely(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC)"
-
           def once(old, new, label):
               global text
               if old not in text:
                   print(f"WARN: {label} needle not found")
                   return
-              # skip if this exact hook already sits next to the needle
               idx = text.find(old)
               nearby = text[max(0, idx-400):idx+len(old)]
               if "INODE_STATE_SUS_PATH" in nearby and "CONFIG_KSU_SUSFS_SUS_PATH" in nearby:
@@ -249,7 +234,6 @@ jobs:
                   return
               text = text.replace(old, new, 1)
               print(f"patched {label}")
-
           once(
               "\t\tdput(dentry);\n\t\tdentry = old;\n\t}\n\treturn dentry;\n}",
               "\t\tdput(dentry);\n\t\tdentry = old;\n\t}\n"
@@ -262,7 +246,6 @@ jobs:
               "\treturn dentry;\n}",
               "lookup_real",
           )
-
           once(
               "\tdentry = __lookup_hash(&nd->last, parent, nd->flags);\n"
               "\tmutex_unlock(&parent->d_inode->i_mutex);\n"
@@ -282,7 +265,6 @@ jobs:
               "\tpath->mnt = nd->path.mnt;\n",
               "lookup_slow",
           )
-
           once(
               "\trestore_nameidata();\n\tputname(name);\n\treturn retval;\n}",
               "\trestore_nameidata();\n"
@@ -295,7 +277,6 @@ jobs:
               "\tputname(name);\n\treturn retval;\n}",
               "filename_lookup",
           )
-
           once(
               "\tif (IS_APPEND(dir))\n\t\treturn -EPERM;\n",
               "\tif (IS_APPEND(dir))\n\t\treturn -EPERM;\n"
@@ -306,7 +287,6 @@ jobs:
               "#endif\n",
               "may_delete",
           )
-
           once(
               "\taudit_inode_child(dir, child, AUDIT_TYPE_CHILD_CREATE);\n"
               "\tif (child->d_inode)\n"
@@ -324,7 +304,6 @@ jobs:
               "\t\treturn -EEXIST;\n",
               "may_create",
           )
-
           once(
               "\tif (!inode)\n\t\treturn -ENOENT;\n\n\tswitch (inode->i_mode & S_IFMT) {",
               "\tif (!inode)\n\t\treturn -ENOENT;\n"
@@ -336,7 +315,6 @@ jobs:
               "\n\tswitch (inode->i_mode & S_IFMT) {",
               "may_open",
           )
-
           p.write_text(text)
           print("=== Remaining CONFIG_KSU_SUSFS_SUS_PATH occurrences ===")
           for i, line in enumerate(text.splitlines(), 1):
@@ -471,6 +449,154 @@ jobs:
           print("=== Final call sites ===")
           for m in re.finditer(r'.*ksu_handle_stat\(&dfd, &fname, &\w+\);.*', new_text):
               print(m.group(0).strip())
+          PY
+      - name: Shim ReSukiSU v2 SUSFS ABI onto 1.5.5
+        working-directory: kernel
+        run: |
+          python3 << 'PY'
+          from pathlib import Path
+
+          defh = Path("include/linux/susfs_def.h")
+          text = defh.read_text()
+          extras = """
+          /* ReSukiSU v2 command IDs missing from susfs 1.5.5 */
+          #ifndef CMD_SUSFS_ADD_SUS_PATH_LOOP
+          #define CMD_SUSFS_ADD_SUS_PATH_LOOP 0x55553
+          #endif
+          #ifndef CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS
+          #define CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS 0x55561
+          #endif
+          #ifndef CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING
+          #define CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING 0x60010
+          #endif
+          #ifndef CMD_SUSFS_ADD_SUS_MAP
+          #define CMD_SUSFS_ADD_SUS_MAP 0x60020
+          #endif
+          """
+          if "CMD_SUSFS_ADD_SUS_PATH_LOOP" not in text:
+              defh.write_text(text.rstrip() + "\n" + extras)
+              print("susfs_def.h: added v2 CMD_* defines")
+          else:
+              print("susfs_def.h: v2 CMD_* already present")
+
+          hdr = Path("include/linux/susfs.h")
+          h = hdr.read_text()
+          proto = """
+          /* ReSukiSU v2 ABI (not in susfs 1.5.5) */
+          void susfs_add_sus_path_loop(void __user **user_info);
+          void susfs_set_hide_sus_mnts_for_non_su_procs(void __user **user_info);
+          void susfs_add_sus_map(void __user **user_info);
+          void susfs_set_avc_log_spoofing(void __user **user_info);
+          void susfs_enable_log(void __user **user_info);
+          void susfs_get_enabled_features(void __user **user_info);
+          void susfs_show_variant(void __user **user_info);
+          void susfs_show_version(void __user **user_info);
+          void susfs_start_sdcard_monitor_fn(void);
+          """
+          if "susfs_add_sus_path_loop" not in h:
+              hdr.write_text(h.rstrip() + "\n" + proto + "\n")
+              print("susfs.h: added v2 prototypes")
+          else:
+              print("susfs.h: v2 prototypes already present")
+
+          src = Path("fs/susfs.c")
+          s = src.read_text()
+          impl = r'''
+          /* ReSukiSU v2 ABI shims on susfs 1.5.5 / kernel 4.4 */
+          void susfs_add_sus_path_loop(void __user **user_info)
+          {
+                  (void)susfs_add_sus_path((struct st_susfs_sus_path __user *)*user_info);
+          }
+
+          void susfs_set_hide_sus_mnts_for_non_su_procs(void __user **user_info)
+          {
+                  int enabled = 0;
+                  if (copy_from_user(&enabled, (int __user *)*user_info, sizeof(enabled)))
+                          return;
+                  (void)enabled;
+          }
+
+          void susfs_add_sus_map(void __user **user_info)
+          {
+                  (void)user_info;
+          }
+
+          void susfs_set_avc_log_spoofing(void __user **user_info)
+          {
+                  int enabled = 0;
+                  if (copy_from_user(&enabled, (int __user *)*user_info, sizeof(enabled)))
+                          return;
+                  (void)enabled;
+          }
+
+          void susfs_enable_log(void __user **user_info)
+          {
+                  int enabled = 0;
+                  if (copy_from_user(&enabled, (int __user *)*user_info, sizeof(enabled)))
+                          return;
+                  susfs_set_log(!!enabled);
+          }
+
+          void susfs_get_enabled_features(void __user **user_info)
+          {
+                  char buf[256];
+                  snprintf(buf, sizeof(buf), "CONFIG_KSU_SUSFS");
+                  copy_to_user((void __user *)*user_info, buf, sizeof(buf));
+          }
+
+          void susfs_show_variant(void __user **user_info)
+          {
+                  char buf[16] = "NON-GKI";
+                  copy_to_user((void __user *)*user_info, buf, sizeof(buf));
+          }
+
+          void susfs_show_version(void __user **user_info)
+          {
+                  char buf[16];
+                  snprintf(buf, sizeof(buf), "%s", SUSFS_VERSION);
+                  copy_to_user((void __user *)*user_info, buf, sizeof(buf));
+          }
+
+          void susfs_start_sdcard_monitor_fn(void)
+          {
+          }
+          '''
+          if "susfs_start_sdcard_monitor_fn" not in s:
+              src.write_text(s.rstrip() + "\n" + impl + "\n")
+              print("susfs.c: appended v2 shims")
+          else:
+              print("susfs.c: shims already present")
+
+          disp = Path("drivers/kernelsu/supercall/dispatch.c")
+          if not disp.exists():
+              raise SystemExit("ERROR: drivers/kernelsu/supercall/dispatch.c not found")
+          d = disp.read_text()
+          if "#include <linux/susfs.h>" not in d:
+              d = d.replace(
+                  "#include <linux/susfs_def.h>",
+                  "#include <linux/susfs_def.h>\n#include <linux/susfs.h>",
+                  1,
+              )
+          repl = {
+              "susfs_add_sus_path(arg);":
+                  "susfs_add_sus_path((struct st_susfs_sus_path __user *)*arg);",
+              "susfs_add_sus_kstat(arg);":
+                  "susfs_add_sus_kstat((struct st_susfs_sus_kstat __user *)*arg);",
+              "susfs_update_sus_kstat(arg);":
+                  "susfs_update_sus_kstat((struct st_susfs_sus_kstat __user *)*arg);",
+              "susfs_set_uname(arg);":
+                  "susfs_set_uname((struct st_susfs_uname __user *)*arg);",
+              "susfs_set_cmdline_or_bootconfig(arg);":
+                  "susfs_set_cmdline_or_bootconfig((char __user *)*arg);",
+              "susfs_add_open_redirect(arg);":
+                  "susfs_add_open_redirect((struct st_susfs_open_redirect __user *)*arg);",
+          }
+          for old, new in repl.items():
+              n = d.count(old)
+              d = d.replace(old, new)
+              print(f"dispatch.c: {old} x{n}")
+          disp.write_text(d)
+          print("dispatch.c patched")
           PY
       - name: Verify namei.c SUSFS hooks
         working-directory: kernel
