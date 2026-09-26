@@ -459,7 +459,10 @@ jobs:
           defh = Path("include/linux/susfs_def.h")
           text = defh.read_text()
           extras = """
-          /* ReSukiSU v2 command IDs missing from susfs 1.5.5 */
+          /* ReSukiSU v2 symbols missing from susfs 1.5.5 */
+          #ifndef SUSFS_MAGIC
+          #define SUSFS_MAGIC 0xFAFAFAFA
+          #endif
           #ifndef CMD_SUSFS_ADD_SUS_PATH_LOOP
           #define CMD_SUSFS_ADD_SUS_PATH_LOOP 0x55553
           #endif
@@ -472,15 +475,30 @@ jobs:
           #ifndef CMD_SUSFS_ADD_SUS_MAP
           #define CMD_SUSFS_ADD_SUS_MAP 0x60020
           #endif
+          #ifndef SUSFS_ENABLED_FEATURES_SIZE
+          #define SUSFS_ENABLED_FEATURES_SIZE 8192
+          #endif
+          #ifndef SUSFS_MAX_VERSION_BUFSIZE
+          #define SUSFS_MAX_VERSION_BUFSIZE 16
+          #endif
+          #ifndef SUSFS_MAX_VARIANT_BUFSIZE
+          #define SUSFS_MAX_VARIANT_BUFSIZE 16
+          #endif
           """
-          if "CMD_SUSFS_ADD_SUS_PATH_LOOP" not in text:
+          if "SUSFS_MAGIC" not in text or "CMD_SUSFS_ADD_SUS_PATH_LOOP" not in text:
               defh.write_text(text.rstrip() + "\n" + extras)
-              print("susfs_def.h: added v2 CMD_* defines")
+              print("susfs_def.h: added v2 defines")
           else:
-              print("susfs_def.h: v2 CMD_* already present")
+              print("susfs_def.h: v2 defines already present")
 
           hdr = Path("include/linux/susfs.h")
           h = hdr.read_text()
+          if "SUSFS_MAGIC" not in h:
+              h = h.replace(
+                  "#include <linux/susfs_def.h>",
+                  "#include <linux/susfs_def.h>\n#ifndef SUSFS_MAGIC\n#define SUSFS_MAGIC 0xFAFAFAFA\n#endif\n",
+                  1,
+              )
           proto = """
           /* ReSukiSU v2 ABI (not in susfs 1.5.5) */
           void susfs_add_sus_path_loop(void __user **user_info);
@@ -494,10 +512,9 @@ jobs:
           void susfs_start_sdcard_monitor_fn(void);
           """
           if "susfs_add_sus_path_loop" not in h:
-              hdr.write_text(h.rstrip() + "\n" + proto + "\n")
-              print("susfs.h: added v2 prototypes")
-          else:
-              print("susfs.h: v2 prototypes already present")
+              h = h.rstrip() + "\n" + proto + "\n"
+          hdr.write_text(h)
+          print("susfs.h updated")
 
           src = Path("fs/susfs.c")
           s = src.read_text()
