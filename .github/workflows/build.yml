@@ -1,0 +1,121 @@
+name: Build joan LOS20 ReSukiSU+SUSFS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git bc bison flex libssl-dev libelf-dev \
+            wget curl unzip python3 python3-pip device-tree-compiler \
+            xz-utils ca-certificates build-essential
+
+      - name: Toolchains
+        run: |
+          mkdir -p $HOME/tc
+          # Clang r450784e — safe for 4.4
+          git clone --depth 1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 $HOME/tc/clang-src || true
+          # Use a ready clang tarball instead
+          wget -q -O clang.tar.gz https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2022/clang-r450784e.tar.gz
+          mkdir -p $HOME/tc/clang
+          tar -xzf clang.tar.gz -C $HOME/tc/clang
+          # GCC 4.9 aarch64 + arm32 (vdso)
+          git clone --depth 1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 $HOME/tc/gcc64
+          git clone --depth 1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 $HOME/tc/gcc32
+          echo "$HOME/tc/clang/bin" >> $GITHUB_PATH
+          echo "$HOME/tc/gcc64/bin" >> $GITHUB_PATH
+          echo "$HOME/tc/gcc32/bin" >> $GITHUB_PATH
+
+      - name: Clone LOS 20 kernel
+        run: |
+          git clone --depth 1 -b lineage-20 \
+            https://github.com/LineageOS/android_kernel_lge_msm8998.git kernel
+          cd kernel
+          git fetch --unshallow || true
+
+      - name: Integrate ReSukiSU (SUSFS-capable branch)
+        working-directory: kernel
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s susfs-dev
+
+      - name: Apply 4.4 SUSFS inline hooks
+        working-directory: kernel
+        run: |
+          curl -LSs -o susfs_inline_hook_patches.sh \
+            https://raw.githubusercontent.com/ardhailhamkusuma9/android_kernel_lge_msm8998/res/susfs_inline_hook_patches.sh
+          chmod +x susfs_inline_hook_patches.sh
+          bash susfs_inline_hook_patches.sh || true
+
+      - name: Enable KSU + SUSFS in defconfig
+        working-directory: kernel
+        run: |
+          CFG=arch/arm64/configs/lineageos_joan_defconfig
+          cat >> "$CFG" << 'EOF'
+          CONFIG_KSU=y
+          CONFIG_KSU_MANUAL_HOOK=y
+          # CONFIG_KSU_KPROBES_HOOK is not set
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_OVERLAY_FS=y
+          EOF
+          # drop leading spaces
+          sed -i 's/^          //' "$CFG"
+
+      - name: Build
+        working-directory: kernel
+        run: |
+          export PATH="$HOME/tc/clang/bin:$HOME/tc/gcc64/bin:$HOME/tc/gcc32/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          mkdir -p out
+          make O=out lineageos_joan_defconfig
+          make O=out -j$(nproc) \
+            CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            KCFLAGS="-Wno-error"
+          test -f out/arch/arm64/boot/Image.gz-dtb
+
+      - name: Pack AnyKernel3
+        run: |
+          git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git ak3
+          rm -rf ak3/.git ak3/banner ak3/README*
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb ak3/
+          cp anykernel.sh ak3/anykernel.sh
+          cd ak3
+          zip -r9 ../AK3-LOS20-Joan_ReSukiSU-SUSFS.zip * -x '*.git*'
+          ls -lh ../AK3-LOS20-Joan_ReSukiSU-SUSFS.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AK3-LOS20-Joan_ReSukiSU-SUSFS
+          path: AK3-LOS20-Joan_ReSukiSU-SUSFS.zip
