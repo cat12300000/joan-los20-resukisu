@@ -75,8 +75,8 @@ jobs:
           from pathlib import Path
 
           stub = """
-          /* Compat: older SUSFS 1.5.x has no susfs_is_current_proc_no_su() */
-          #ifndef susfs_is_current_proc_no_su
+          #ifndef SUSFS_HAS_CURRENT_PROC_NO_SU
+          #define SUSFS_HAS_CURRENT_PROC_NO_SU
           static inline bool susfs_is_current_proc_no_su(void)
           {
                   return false;
@@ -86,13 +86,19 @@ jobs:
 
           def ensure_stub(path: Path) -> None:
               if not path.exists():
-                  path.write_text(stub)
+                  path.write_text("#pragma once\n" + stub)
                   return
               text = path.read_text()
-              if "susfs_is_current_proc_no_su" not in text:
-                  path.write_text(text.rstrip() + "\n" + stub)
+              if "susfs_is_current_proc_no_su" in text:
+                  return
+              idx = text.rfind("#endif")
+              if idx != -1:
+                  text = text[:idx] + stub + "\n" + text[idx:]
+              else:
+                  text = text.rstrip() + "\n" + stub
+              path.write_text(text)
 
-          ensure_stub(Path("include/linux/susfs.h"))
+          # Only susfs_def.h. susfs.h already includes it.
           ensure_stub(Path("include/linux/susfs_def.h"))
 
           stat = Path("fs/stat.c")
@@ -101,7 +107,11 @@ jobs:
           cleaned = []
           for line in text.splitlines(True):
               stripped = line.strip()
-              if stripped.endswith("struct path *path, struct path *root);") and "filename_lookup" not in stripped and "extern" not in stripped:
+              if (
+                  stripped.endswith("struct path *path, struct path *root);")
+                  and "filename_lookup" not in stripped
+                  and "extern" not in stripped
+              ):
                   continue
               cleaned.append(line)
           text = "".join(cleaned)
@@ -112,7 +122,10 @@ jobs:
               for i, line in enumerate(lines):
                   if line.startswith("#include"):
                       insert_at = i + 1
-              lines.insert(insert_at, "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs.h>\n#endif\n")
+              lines.insert(
+                  insert_at,
+                  "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs.h>\n#endif\n",
+              )
               text = "".join(lines)
 
           proto = """#ifdef CONFIG_KSU_SUSFS
@@ -129,8 +142,13 @@ jobs:
                   text = text.replace(needle, proto + "\n" + needle, 1)
 
           if "struct filename *fname" not in text:
-              old = "\tunsigned int lookup_flags = 0;\n"
-              new = "\tunsigned int lookup_flags = 0;\n#ifdef CONFIG_KSU_SUSFS\n\tstruct filename *fname = NULL;\n#endif\n"
+              old = chr(9) + "unsigned int lookup_flags = 0;\n"
+              new = (
+                  chr(9) + "unsigned int lookup_flags = 0;\n"
+                  "#ifdef CONFIG_KSU_SUSFS\n"
+                  + chr(9) + "struct filename *fname = NULL;\n"
+                  "#endif\n"
+              )
               if old in text:
                   text = text.replace(old, new, 1)
 
@@ -147,10 +165,15 @@ jobs:
                   for i, line in enumerate(lines):
                       if line.startswith("#include"):
                           insert_at = i + 1
-                  lines.insert(insert_at, "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs.h>\n#endif\n")
+                  lines.insert(
+                      insert_at,
+                      "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs.h>\n#endif\n",
+                  )
                   p.write_text("".join(lines))
 
           print("=== Repair done ===")
+          print("stat.c has filename_lookup extern:", "extern int filename_lookup" in Path("fs/stat.c").read_text())
+          print("stat.c has fname:", "struct filename *fname" in Path("fs/stat.c").read_text())
           PY
 
           echo "=== Verifying SUSFS header ==="
