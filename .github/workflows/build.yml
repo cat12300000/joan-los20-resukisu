@@ -53,11 +53,7 @@ jobs:
         run: |
           git clone --depth 1 -b kernel-4.9 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
 
-          echo "=== Contents of kernel_patches/fs and kernel_patches/include/linux (sanity check) ==="
-          ls -la /tmp/susfs4ksu/kernel_patches/fs/
-          ls -la /tmp/susfs4ksu/kernel_patches/include/linux/
-
-          echo "=== Copying ALL susfs core files, not just susfs.c/susfs.h ==="
+          echo "=== Copying ALL susfs core files ==="
           cp -v /tmp/susfs4ksu/kernel_patches/fs/* fs/
           cp -v /tmp/susfs4ksu/kernel_patches/include/linux/* include/linux/
 
@@ -65,22 +61,34 @@ jobs:
           patch -p1 --fuzz=3 -f < /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.9.patch || true
 
           echo ""
-          echo "=== Reject files (hunks that failed to apply) ==="
+          echo "=== Reject files ==="
           find . -name "*.rej" | sort
           echo ""
           echo "=== SUSFS_VERSION now readable? ==="
-          grep -E '^#define SUSFS_VERSION' include/linux/susfs.h || echo "NOT FOUND"
+          grep -E '^#define SUSFS_VERSION' include/linux/susfs.h || true
 
           echo ""
-          echo "=== Diagnosing susfs_is_current_proc_no_su (fs/open.c build failure) ==="
-          echo "--- context in fs/open.c around the call ---"
-          grep -n "susfs_is_current_proc_no_su" fs/open.c -B 15 -A 2
+          echo "=== KernelSU/kernel/feature/sucompat.h (full file — defines the macro alias) ==="
+          cat KernelSU/kernel/feature/sucompat.h || true
+
           echo ""
-          echo "--- every occurrence of this symbol in the whole tree ---"
-          grep -rn "susfs_is_current_proc_no_su" --include="*.c" --include="*.h" . || echo "no other occurrences found"
+          echo "=== Does fs/open.c already #include anything ksu/susfs-related? ==="
+          grep -n "#include" fs/open.c | grep -iE "ksu|susfs" || echo "NONE FOUND"
+
           echo ""
-          echo "--- is CONFIG_KSU_SUSFS_SUS_SU referenced near it in open.c? ---"
-          grep -n "CONFIG_KSU_SUSFS_SUS_SU" fs/open.c
+          echo "=== Does any already-working file (e.g. fs/exec.c, patched earlier by inline hooks) show us the right include? ==="
+          grep -n "#include" fs/exec.c | grep -iE "ksu|susfs" || echo "NONE FOUND"
+
+          echo ""
+          echo "=== Where does ksu_is_current_proc_unprivillege actually get DEFINED (not just macro'd)? ==="
+          grep -rn "ksu_is_current_proc_unprivillege" --include="*.c" --include="*.h" . || echo "NONE FOUND"
+
+          echo ""
+          echo "=== What's the relative include path from fs/ to KernelSU/kernel/feature/sucompat.h? ==="
+          find . -iname "sucompat.h"
+          echo ""
+          echo "=== Is there a drivers/kernelsu symlink, and where does it point? ==="
+          ls -la drivers/kernelsu 2>&1 || true
 
       - name: Diagnose SUSFS integration check
         working-directory: kernel
