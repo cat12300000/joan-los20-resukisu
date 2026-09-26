@@ -36,18 +36,6 @@ jobs:
           cd kernel
           git fetch --unshallow || true
 
-      - name: Diagnose pristine namei.c before any patching
-        working-directory: kernel
-        run: |
-          echo "=== Does fs/namei.c already contain CONFIG_KSU_SUSFS_SUS_PATH before ANY of our steps run? ==="
-          grep -n "CONFIG_KSU_SUSFS_SUS_PATH\|INODE_STATE_SUS_PATH\|susfs_task_state" fs/namei.c || echo "NONE FOUND (pristine, clean)"
-          echo ""
-          echo "=== Does fs/namei.c already contain CONFIG_KSU_SUSFS_OPEN_REDIRECT before ANY of our steps run? ==="
-          grep -n "CONFIG_KSU_SUSFS_OPEN_REDIRECT\|INODE_STATE_OPEN_REDIRECT" fs/namei.c || echo "NONE FOUND (pristine, clean)"
-          echo ""
-          echo "=== git log for fs/namei.c on this branch (last 5 commits touching it) ==="
-          git log --oneline -5 -- fs/namei.c || true
-
       - name: Integrate ReSukiSU
         working-directory: kernel
         run: |
@@ -75,13 +63,73 @@ jobs:
           echo "=== Applying SUSFS 4.9 patch (fuzz=3) ==="
           patch -p1 --fuzz=3 -f < /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.9.patch || true
 
-          echo "=== Checking namei.c for stray blocks right after patch step ==="
-          grep -n "CONFIG_KSU_SUSFS_SUS_PATH\|CONFIG_KSU_SUSFS_OPEN_REDIRECT" fs/namei.c || echo "NONE FOUND"
-
           echo "=== Adding susfs.o to fs/Makefile if missing ==="
           if ! grep -q "susfs.o" fs/Makefile; then
             echo 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' >> fs/Makefile
           fi
+
+      - name: Remove broken SUS_PATH fragments from namei.c
+        working-directory: kernel
+        run: |
+          python3 << 'PY'
+          import re
+          from pathlib import Path
+
+          p = Path("fs/namei.c")
+          text = p.read_text()
+          before = len(text)
+
+          # These 4 fragments landed on top of code in the wrong function
+          # (path_openat's tail, vfs_unlink2, the rename() cleanup path, and
+          # file scope after page_symlink_inode_operations), referencing
+          # variables (dentry/nd/inode) that don't exist in that local scope
+          # on this msm8998 4.4 tree. They came from patch's fuzzy matching
+          # succeeding against unrelated context. Removing them; the real
+          # SUS_PATH hardening for may_create/may_o_create/lookup_open/
+          # do_filp_open already failed cleanly earlier and was never applied.
+
+          patterns = [
+              r"#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              r"\tif \(!IS_ERR\(dentry\) && dentry->d_inode && unlikely\(dentry->d_inode->i_state & INODE_STATE_SUS_PATH\) && likely\(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC\)\) \{\n"
+              r"\t\tdput\(dentry\);\n"
+              r"\t\treturn ERR_PTR\(-ENOENT\);\n"
+              r"\t\}\n"
+              r"#endif\n",
+
+              r"#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              r"\t\t// we deal with sus sub path here\n"
+              r"\t\tif \(nd->inode && unlikely\(nd->inode->i_state & INODE_STATE_SUS_PATH\) && likely\(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC\)\) \{\n"
+              r"\t\t\treturn 0;\n"
+              r"\t\t\}\n"
+              r"#endif\n",
+
+              r"#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              r"\tif \(unlikely\(inode->i_state & INODE_STATE_SUS_PATH\) && likely\(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC\)\) \{\n"
+              r"\t\treturn -ENOENT;\n"
+              r"\t\}\n"
+              r"#endif\n",
+
+              r"#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              r"\t\tif \(unlikely\(dentry->d_inode->i_state & INODE_STATE_SUS_PATH\) && likely\(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC\)\) \{\n"
+              r"\t\t\tdput\(dentry\);\n"
+              r"\t\t\treturn -ENOENT;\n"
+              r"\t\t\}\n"
+              r"#endif\n",
+          ]
+
+          total_removed = 0
+          for pat in patterns:
+              text, n = re.subn(pat, "", text)
+              total_removed += n
+
+          p.write_text(text)
+          print(f"Removed {total_removed} broken fragment(s), {before - len(text)} bytes")
+
+          print("=== Remaining CONFIG_KSU_SUSFS_SUS_PATH occurrences ===")
+          for i, line in enumerate(text.splitlines(), 1):
+              if "CONFIG_KSU_SUSFS_SUS_PATH" in line or "CONFIG_KSU_SUSFS_OPEN_REDIRECT" in line:
+                  print(i, line)
+          PY
 
       - name: Repair 4.4 hook fallout
         working-directory: kernel
@@ -234,14 +282,10 @@ jobs:
               print(m.group(0).strip())
           PY
 
-      - name: Diagnose namei.c partial-patch fallout
+      - name: Verify namei.c has no leftover CONFIG_KSU_SUSFS references
         working-directory: kernel
         run: |
-          echo "=== Reject files present (expected: namei.c and stat.c) ==="
-          find . -name "*.rej" | sort
-          echo ""
-          echo "=== Full context: where do these stray blocks live NOW, right before build? ==="
-          grep -n "CONFIG_KSU_SUSFS_SUS_PATH\|CONFIG_KSU_SUSFS_OPEN_REDIRECT" fs/namei.c
+          grep -n "CONFIG_KSU_SUSFS_SUS_PATH\|CONFIG_KSU_SUSFS_OPEN_REDIRECT" fs/namei.c || echo "clean"
 
       - name: Enable KSU + SUSFS in defconfig
         working-directory: kernel
