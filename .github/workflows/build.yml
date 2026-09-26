@@ -68,18 +68,93 @@ jobs:
             echo 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' >> fs/Makefile
           fi
 
-          echo "=== Compatibility fix for susfs_is_current_proc_no_su ==="
-          if ! grep -q "susfs_is_current_proc_no_su" include/linux/susfs.h 2>/dev/null; then
-            printf '\n/* Compatibility for newer inline-hooks on older SUSFS */\n#ifndef susfs_is_current_proc_no_su\nstatic inline bool susfs_is_current_proc_no_su(void)\n{\n\treturn false;\n}\n#endif\n' >> include/linux/susfs.h
-          fi
+      - name: Repair 4.4 hook fallout
+        working-directory: kernel
+        run: |
+          python3 << 'PY'
+          from pathlib import Path
 
-          if ! grep -q "linux/susfs.h" fs/open.c; then
-            sed -i '1i #include <linux/susfs.h>' fs/open.c
-          fi
+          stub = """
+          /* Compat: older SUSFS 1.5.x has no susfs_is_current_proc_no_su() */
+          #ifndef susfs_is_current_proc_no_su
+          static inline bool susfs_is_current_proc_no_su(void)
+          {
+                  return false;
+          }
+          #endif
+          """
+
+          def ensure_stub(path: Path) -> None:
+              if not path.exists():
+                  path.write_text(stub)
+                  return
+              text = path.read_text()
+              if "susfs_is_current_proc_no_su" not in text:
+                  path.write_text(text.rstrip() + "\n" + stub)
+
+          ensure_stub(Path("include/linux/susfs.h"))
+          ensure_stub(Path("include/linux/susfs_def.h"))
+
+          stat = Path("fs/stat.c")
+          text = stat.read_text()
+
+          cleaned = []
+          for line in text.splitlines(True):
+              stripped = line.strip()
+              if stripped.endswith("struct path *path, struct path *root);") and "filename_lookup" not in stripped and "extern" not in stripped:
+                  continue
+              cleaned.append(line)
+          text = "".join(cleaned)
+
+          if "linux/susfs.h" not in text:
+              lines = text.splitlines(True)
+              insert_at = 0
+              for i, line in enumerate(lines):
+                  if line.startswith("#include"):
+                      insert_at = i + 1
+              lines.insert(insert_at, "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs.h>\n#endif\n")
+              text = "".join(lines)
+
+          proto = """#ifdef CONFIG_KSU_SUSFS
+          extern struct static_key_true ksu_su_compat_enabled;
+          extern bool __ksu_is_allow_uid_for_current(uid_t uid);
+          extern int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);
+          extern int filename_lookup(int dfd, struct filename *name, unsigned flags,
+                                          struct path *path, struct path *root);
+          #endif
+          """
+          if "extern int filename_lookup" not in text:
+              needle = "int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,"
+              if needle in text:
+                  text = text.replace(needle, proto + "\n" + needle, 1)
+
+          if "struct filename *fname" not in text:
+              old = "\tunsigned int lookup_flags = 0;\n"
+              new = "\tunsigned int lookup_flags = 0;\n#ifdef CONFIG_KSU_SUSFS\n\tstruct filename *fname = NULL;\n#endif\n"
+              if old in text:
+                  text = text.replace(old, new, 1)
+
+          stat.write_text(text)
+
+          for rel in ("fs/open.c", "fs/exec.c"):
+              p = Path(rel)
+              if not p.exists():
+                  continue
+              t = p.read_text()
+              if "linux/susfs.h" not in t:
+                  lines = t.splitlines(True)
+                  insert_at = 0
+                  for i, line in enumerate(lines):
+                      if line.startswith("#include"):
+                          insert_at = i + 1
+                  lines.insert(insert_at, "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs.h>\n#endif\n")
+                  p.write_text("".join(lines))
+
+          print("=== Repair done ===")
+          PY
 
           echo "=== Verifying SUSFS header ==="
-          grep -E '^#define SUSFS_VERSION' include/linux/susfs.h || \
-            echo "WARNING: SUSFS Version Header Not Found"
+          grep -E 'SUSFS_VERSION|susfs_is_current_proc_no_su' include/linux/susfs.h include/linux/susfs_def.h || true
 
       - name: Enable KSU + SUSFS in defconfig
         working-directory: kernel
