@@ -20,15 +20,10 @@ jobs:
       - name: Toolchains
         run: |
           mkdir -p $HOME/tc
-          # Clang r450784e — safe for 4.4
-          git clone --depth 1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 $HOME/tc/clang-src || true
-          # Use a ready clang tarball instead
-          wget -q -O clang.tar.gz https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2022/clang-r450784e.tar.gz
-          mkdir -p $HOME/tc/clang
-          tar -xzf clang.tar.gz -C $HOME/tc/clang
-          # GCC 4.9 aarch64 + arm32 (vdso)
+          git clone --depth 1 https://github.com/kdrag0n/proton-clang $HOME/tc/clang
           git clone --depth 1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 $HOME/tc/gcc64
           git clone --depth 1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 $HOME/tc/gcc32
+          test -x $HOME/tc/clang/bin/clang
           echo "$HOME/tc/clang/bin" >> $GITHUB_PATH
           echo "$HOME/tc/gcc64/bin" >> $GITHUB_PATH
           echo "$HOME/tc/gcc32/bin" >> $GITHUB_PATH
@@ -77,7 +72,6 @@ jobs:
           CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
           CONFIG_OVERLAY_FS=y
           EOF
-          # drop leading spaces
           sed -i 's/^          //' "$CFG"
 
       - name: Build
