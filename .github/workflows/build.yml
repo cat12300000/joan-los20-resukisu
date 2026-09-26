@@ -615,6 +615,25 @@ jobs:
           disp.write_text(d)
           print("dispatch.c patched")
           PY
+      - name: Fix tspdrv.h sys/ioctl.h for kernel build
+        working-directory: kernel
+        run: |
+          python3 << 'PY'
+          from pathlib import Path
+          p = Path("include/uapi/linux/tspdrv.h")
+          t = p.read_text()
+          old = "#include <sys/ioctl.h>"
+          new = """#ifdef __KERNEL__
+#include <linux/ioctl.h>
+#else
+#include <sys/ioctl.h>
+#endif"""
+          if old in t and "<linux/ioctl.h>" not in t:
+              p.write_text(t.replace(old, new, 1))
+              print("tspdrv.h: gated sys/ioctl.h")
+          else:
+              print("tspdrv.h: already patched or unexpected")
+          PY
       - name: Verify namei.c SUSFS hooks
         working-directory: kernel
         run: |
