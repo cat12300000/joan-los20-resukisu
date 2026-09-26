@@ -1,23 +1,18 @@
 name: Build joan LOS20 ReSukiSU+SUSFS
-
 on:
   workflow_dispatch:
-
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Install deps
         run: |
           sudo apt-get update
           sudo apt-get install -y git bc bison flex libssl-dev libelf-dev \
             wget curl unzip python3 python3-pip device-tree-compiler \
             xz-utils ca-certificates build-essential rsync
-
       - name: Toolchains
         run: |
           mkdir -p "$HOME/tc"
@@ -28,19 +23,16 @@ jobs:
           echo "$HOME/tc/clang/bin" >> "$GITHUB_PATH"
           echo "$HOME/tc/gcc64/bin" >> "$GITHUB_PATH"
           echo "$HOME/tc/gcc32/bin" >> "$GITHUB_PATH"
-
       - name: Clone LOS 20 kernel
         run: |
           git clone --depth 1 -b lineage-20 \
             https://github.com/LineageOS/android_kernel_lge_msm8998.git kernel
           cd kernel
           git fetch --unshallow || true
-
       - name: Integrate ReSukiSU
         working-directory: kernel
         run: |
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
-
       - name: Apply 4.4 SUSFS inline hooks
         working-directory: kernel
         run: |
@@ -48,42 +40,157 @@ jobs:
             "https://raw.githubusercontent.com/ardhailhamkusuma9/android_kernel_lge_msm8998/res/susfs_inline_hook_patches.sh"
           chmod +x susfs_inline_hook_patches.sh
           bash susfs_inline_hook_patches.sh || true
-
       - name: Integrate susfs4ksu core files and patchset
         working-directory: kernel
         run: |
           echo "=== Cloning susfs4ksu (kernel-4.9 is closest for 4.4) ==="
           git clone --depth 1 -b kernel-4.9 \
             https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
-
           echo "=== Copying SUSFS core files ==="
           cp -v /tmp/susfs4ksu/kernel_patches/fs/* fs/ || true
           cp -v /tmp/susfs4ksu/kernel_patches/include/linux/* include/linux/ || true
-
-          echo "=== Applying SUSFS 4.9 patch (fuzz=3) ==="
+          echo "=== Applying SUSFS 4.9 patch (fuzz=3, expected rejects on 4.4) ==="
           patch -p1 --fuzz=3 -f < /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.9.patch || true
-
+          echo "=== Reject files (informational) ==="
+          find . -name '*.rej' -print -exec sh -c 'echo "--- $1 ---"; cat "$1"' _ {} \; || true
           echo "=== Adding susfs.o to fs/Makefile if missing ==="
           if ! grep -q "susfs.o" fs/Makefile; then
             echo 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' >> fs/Makefile
           fi
-
-      - name: Diagnose dcache.c context around line 2225
-        working-directory: kernel
-        run: |
-          sed -n '2180,2260p' fs/dcache.c
-
-      - name: Remove broken SUS_PATH fragments from namei.c
+      - name: Repair dcache.c 4.4 SUS_PATH hooks
         working-directory: kernel
         run: |
           python3 << 'PY'
           import re
           from pathlib import Path
 
+          p = Path("fs/dcache.c")
+          text = p.read_text()
+
+          block_re = re.compile(
+              r"#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              r"[ \t]*if \(dentry->d_inode && unlikely\(dentry->d_inode->i_state & INODE_STATE_SUS_PATH\).*\n"
+              r"[ \t]*continue;\n"
+              r"[ \t]*\}\n"
+              r"#endif\n+"
+          )
+          text, n = block_re.subn("", text)
+          print(f"Removed {n} existing SUS_PATH continue-block(s)")
+
+          if "linux/susfs_def.h" not in text:
+              needle = "#include <linux/kasan.h>\n"
+              if needle not in text:
+                  raise SystemExit("ERROR: dcache.c include anchor not found")
+              text = text.replace(
+                  needle,
+                  needle + "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n#include <linux/susfs_def.h>\n#endif\n",
+                  1,
+              )
+
+          old_rcu = (
+              "\t\tif (dentry->d_name.hash_len != hashlen)\n"
+              "\t\t\tcontinue;\n"
+              "\t\t*seqp = seq;\n"
+              "\t\tif (!dentry_cmp(dentry, str, hashlen_len(hashlen)))\n"
+              "\t\t\treturn dentry;"
+          )
+          new_rcu = (
+              "\t\tif (dentry->d_name.hash_len != hashlen)\n"
+              "\t\t\tcontinue;\n"
+              "\t\t*seqp = seq;\n"
+              "\t\tif (!dentry_cmp(dentry, str, hashlen_len(hashlen))) {\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              "\t\t\tif (dentry->d_inode && unlikely(dentry->d_inode->i_state & INODE_STATE_SUS_PATH) && likely(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC)) {\n"
+              "\t\t\t\tcontinue;\n"
+              "\t\t\t}\n"
+              "#endif\n"
+              "\t\t\treturn dentry;\n"
+              "\t\t}"
+          )
+          if old_rcu not in text:
+              raise SystemExit("ERROR: __d_lookup_rcu name-match pattern not found")
+          text = text.replace(old_rcu, new_rcu, 1)
+          print("Inserted SUS_PATH into __d_lookup_rcu name-match path")
+
+          old_ok = "\t\t\tcase D_COMP_OK:\n\t\t\t\treturn dentry;"
+          new_ok = (
+              "\t\t\tcase D_COMP_OK:\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              "\t\t\t\tif (dentry->d_inode && unlikely(dentry->d_inode->i_state & INODE_STATE_SUS_PATH) && likely(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC)) {\n"
+              "\t\t\t\t\tcontinue;\n"
+              "\t\t\t\t}\n"
+              "#endif\n"
+              "\t\t\t\treturn dentry;"
+          )
+          if old_ok in text:
+              text = text.replace(old_ok, new_ok, 1)
+              print("Inserted SUS_PATH into D_COMP_OK path")
+          else:
+              print("WARN: D_COMP_OK path not found")
+
+          old_lookup = (
+              "\t\tif (dentry->d_name.hash != hash)\n"
+              "\t\t\tcontinue;\n"
+              "\n"
+              "\t\tspin_lock(&dentry->d_lock);"
+          )
+          new_lookup = (
+              "\t\tif (dentry->d_name.hash != hash)\n"
+              "\t\t\tcontinue;\n"
+              "\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              "\t\tif (dentry->d_inode && unlikely(dentry->d_inode->i_state & INODE_STATE_SUS_PATH) && likely(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC)) {\n"
+              "\t\t\tcontinue;\n"
+              "\t\t}\n"
+              "#endif\n"
+              "\n"
+              "\t\tspin_lock(&dentry->d_lock);"
+          )
+          if old_lookup in text:
+              text = text.replace(old_lookup, new_lookup, 1)
+              print("Inserted SUS_PATH into __d_lookup hash path")
+          elif "INODE_STATE_SUS_PATH" in text.split("struct dentry *__d_lookup(", 1)[-1][:2500]:
+              print("__d_lookup already has SUS_PATH")
+          else:
+              raise SystemExit("ERROR: __d_lookup hash-check pattern not found")
+
+          p.write_text(text)
+
+          # Guard: a continue for SUS_PATH must sit after a for/while in the same function
+          src = p.read_text().splitlines()
+          in_func = False
+          loop_depth = 0
+          for i, line in enumerate(src, 1):
+              if line.startswith("struct dentry *__d_lookup"):
+                  in_func = True
+                  loop_depth = 0
+              elif in_func and line.startswith("}") and not line.startswith("}\t") and loop_depth == 0 and "continue" not in line:
+                  if line.strip() == "}":
+                      in_func = False
+              if not in_func:
+                  continue
+              if "hlist_bl_for_each_entry_rcu" in line or re.search(r"\bfor\s*\(", line) or re.search(r"\bwhile\s*\(", line):
+                  loop_depth += 1
+              if line.strip() == "}" or line.strip() == "};":
+                  pass
+              if "continue;" in line and "INODE_STATE_SUS_PATH" in "\n".join(src[max(0, i-8):i]):
+                  # look backwards for for_each
+                  window = "\n".join(src[max(0, i-80):i])
+                  if "hlist_bl_for_each_entry_rcu" not in window:
+                      raise SystemExit(f"ERROR: continue still outside lookup loop around line {i}")
+          print("dcache.c repaired and sanity-checked")
+          PY
+          echo "=== __d_lookup_rcu around SUS_PATH ==="
+          grep -n -n "INODE_STATE_SUS_PATH\|hlist_bl_for_each_entry_rcu\|__d_lookup" fs/dcache.c | head -40
+      - name: Remove broken SUS_PATH fragments from namei.c
+        working-directory: kernel
+        run: |
+          python3 << 'PY'
+          import re
+          from pathlib import Path
           p = Path("fs/namei.c")
           text = p.read_text()
           before = len(text)
-
           patterns = [
               r"#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
               r"\tif \(!IS_ERR\(dentry\) && dentry->d_inode && unlikely\(dentry->d_inode->i_state & INODE_STATE_SUS_PATH\) && likely\(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC\)\) \{\n"
@@ -91,20 +198,17 @@ jobs:
               r"\t\treturn ERR_PTR\(-ENOENT\);\n"
               r"\t\}\n"
               r"#endif\n",
-
               r"#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
               r"\t\t// we deal with sus sub path here\n"
               r"\t\tif \(nd->inode && unlikely\(nd->inode->i_state & INODE_STATE_SUS_PATH\) && likely\(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC\)\) \{\n"
               r"\t\t\treturn 0;\n"
               r"\t\t\}\n"
               r"#endif\n",
-
               r"#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
               r"\tif \(unlikely\(inode->i_state & INODE_STATE_SUS_PATH\) && likely\(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC\)\) \{\n"
               r"\t\treturn -ENOENT;\n"
               r"\t\}\n"
               r"#endif\n",
-
               r"#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
               r"\t\tif \(unlikely\(dentry->d_inode->i_state & INODE_STATE_SUS_PATH\) && likely\(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC\)\) \{\n"
               r"\t\t\tdput\(dentry\);\n"
@@ -112,27 +216,138 @@ jobs:
               r"\t\t\}\n"
               r"#endif\n",
           ]
-
           total_removed = 0
           for pat in patterns:
               text, n = re.subn(pat, "", text)
               total_removed += n
-
           p.write_text(text)
           print(f"Removed {total_removed} broken fragment(s), {before - len(text)} bytes")
-
-          print("=== Remaining CONFIG_KSU_SUSFS_SUS_PATH occurrences ===")
-          for i, line in enumerate(text.splitlines(), 1):
-              if "CONFIG_KSU_SUSFS_SUS_PATH" in line or "CONFIG_KSU_SUSFS_OPEN_REDIRECT" in line:
-                  print(i, line)
           PY
-
-      - name: Repair 4.4 hook fallout
+      - name: Port SUS_PATH into 4.4 namei.c
         working-directory: kernel
         run: |
           python3 << 'PY'
           from pathlib import Path
 
+          p = Path("fs/namei.c")
+          text = p.read_text()
+          cond_dentry = "dentry->d_inode && unlikely(dentry->d_inode->i_state & INODE_STATE_SUS_PATH) && likely(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC)"
+          cond_inode = "unlikely(inode->i_state & INODE_STATE_SUS_PATH) && likely(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC)"
+          cond_child = "child->d_inode && unlikely(child->d_inode->i_state & INODE_STATE_SUS_PATH) && likely(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC)"
+          cond_path = "!retval && path->dentry && path->dentry->d_inode && unlikely(path->dentry->d_inode->i_state & INODE_STATE_SUS_PATH) && likely(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC)"
+
+          def once(old, new, label):
+              global text
+              if old not in text:
+                  print(f"WARN: {label} needle not found")
+                  return
+              # skip if this exact hook already sits next to the needle
+              idx = text.find(old)
+              nearby = text[max(0, idx-400):idx+len(old)]
+              if "INODE_STATE_SUS_PATH" in nearby and "CONFIG_KSU_SUSFS_SUS_PATH" in nearby:
+                  print(f"skip {label}: already hooked")
+                  return
+              text = text.replace(old, new, 1)
+              print(f"patched {label}")
+
+          once(
+              "\t\tdput(dentry);\n\t\tdentry = old;\n\t}\n\treturn dentry;\n}",
+              "\t\tdput(dentry);\n\t\tdentry = old;\n\t}\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              f"\tif (!IS_ERR(dentry) && {cond_dentry}) {{\n"
+              "\t\tdput(dentry);\n"
+              "\t\treturn ERR_PTR(-ENOENT);\n"
+              "\t}\n"
+              "#endif\n"
+              "\treturn dentry;\n}",
+              "lookup_real",
+          )
+
+          once(
+              "\tdentry = __lookup_hash(&nd->last, parent, nd->flags);\n"
+              "\tmutex_unlock(&parent->d_inode->i_mutex);\n"
+              "\tif (IS_ERR(dentry))\n"
+              "\t\treturn PTR_ERR(dentry);\n"
+              "\tpath->mnt = nd->path.mnt;\n",
+              "\tdentry = __lookup_hash(&nd->last, parent, nd->flags);\n"
+              "\tmutex_unlock(&parent->d_inode->i_mutex);\n"
+              "\tif (IS_ERR(dentry))\n"
+              "\t\treturn PTR_ERR(dentry);\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              f"\tif ({cond_dentry}) {{\n"
+              "\t\tdput(dentry);\n"
+              "\t\treturn -ENOENT;\n"
+              "\t}\n"
+              "#endif\n"
+              "\tpath->mnt = nd->path.mnt;\n",
+              "lookup_slow",
+          )
+
+          once(
+              "\trestore_nameidata();\n\tputname(name);\n\treturn retval;\n}",
+              "\trestore_nameidata();\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              f"\tif ({cond_path}) {{\n"
+              "\t\tputname(name);\n"
+              "\t\treturn -ENOENT;\n"
+              "\t}\n"
+              "#endif\n"
+              "\tputname(name);\n\treturn retval;\n}",
+              "filename_lookup",
+          )
+
+          once(
+              "\tif (IS_APPEND(dir))\n\t\treturn -EPERM;\n",
+              "\tif (IS_APPEND(dir))\n\t\treturn -EPERM;\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              f"\tif ({cond_inode}) {{\n"
+              "\t\treturn -ENOENT;\n"
+              "\t}\n"
+              "#endif\n",
+              "may_delete",
+          )
+
+          once(
+              "\taudit_inode_child(dir, child, AUDIT_TYPE_CHILD_CREATE);\n"
+              "\tif (child->d_inode)\n"
+              "\t\treturn -EEXIST;\n",
+              "\taudit_inode_child(dir, child, AUDIT_TYPE_CHILD_CREATE);\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              f"\tif ({cond_child}) {{\n"
+              "\t\tint error = inode_permission2(mnt, dir, MAY_WRITE | MAY_EXEC);\n"
+              "\t\tif (error)\n"
+              "\t\t\treturn error;\n"
+              "\t\treturn -ENOENT;\n"
+              "\t}\n"
+              "#endif\n"
+              "\tif (child->d_inode)\n"
+              "\t\treturn -EEXIST;\n",
+              "may_create",
+          )
+
+          once(
+              "\tif (!inode)\n\t\treturn -ENOENT;\n\n\tswitch (inode->i_mode & S_IFMT) {",
+              "\tif (!inode)\n\t\treturn -ENOENT;\n"
+              "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+              f"\tif ({cond_inode}) {{\n"
+              "\t\treturn -ENOENT;\n"
+              "\t}\n"
+              "#endif\n"
+              "\n\tswitch (inode->i_mode & S_IFMT) {",
+              "may_open",
+          )
+
+          p.write_text(text)
+          print("=== Remaining CONFIG_KSU_SUSFS_SUS_PATH occurrences ===")
+          for i, line in enumerate(text.splitlines(), 1):
+              if "CONFIG_KSU_SUSFS_SUS_PATH" in line or "CONFIG_KSU_SUSFS_OPEN_REDIRECT" in line:
+                  print(i, line)
+          PY
+      - name: Repair 4.4 hook fallout
+        working-directory: kernel
+        run: |
+          python3 << 'PY'
+          from pathlib import Path
           stub = """
           #ifndef SUSFS_HAS_CURRENT_PROC_NO_SU
           #define SUSFS_HAS_CURRENT_PROC_NO_SU
@@ -142,7 +357,6 @@ jobs:
           }
           #endif
           """
-
           def ensure_stub(path: Path) -> None:
               if not path.exists():
                   path.write_text("#pragma once\n" + stub)
@@ -156,13 +370,9 @@ jobs:
               else:
                   text = text.rstrip() + "\n" + stub
               path.write_text(text)
-
-          # Only susfs_def.h. susfs.h already includes it.
           ensure_stub(Path("include/linux/susfs_def.h"))
-
           stat = Path("fs/stat.c")
           text = stat.read_text()
-
           cleaned = []
           for line in text.splitlines(True):
               stripped = line.strip()
@@ -174,7 +384,6 @@ jobs:
                   continue
               cleaned.append(line)
           text = "".join(cleaned)
-
           if "linux/susfs.h" not in text:
               lines = text.splitlines(True)
               insert_at = 0
@@ -186,7 +395,6 @@ jobs:
                   "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs.h>\n#endif\n",
               )
               text = "".join(lines)
-
           proto = """#ifdef CONFIG_KSU_SUSFS
           extern struct static_key_true ksu_su_compat_enabled;
           extern bool __ksu_is_allow_uid_for_current(uid_t uid);
@@ -199,7 +407,6 @@ jobs:
               needle = "int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,"
               if needle in text:
                   text = text.replace(needle, proto + "\n" + needle, 1)
-
           if "struct filename *fname" not in text:
               old = chr(9) + "unsigned int lookup_flags = 0;\n"
               new = (
@@ -210,9 +417,7 @@ jobs:
               )
               if old in text:
                   text = text.replace(old, new, 1)
-
           stat.write_text(text)
-
           for rel in ("fs/open.c", "fs/exec.c"):
               p = Path(rel)
               if not p.exists():
@@ -229,60 +434,48 @@ jobs:
                       "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs.h>\n#endif\n",
                   )
                   p.write_text("".join(lines))
-
           print("=== Repair done ===")
           print("stat.c has filename_lookup extern:", "extern int filename_lookup" in Path("fs/stat.c").read_text())
           print("stat.c has fname:", "struct filename *fname" in Path("fs/stat.c").read_text())
           PY
-
           echo "=== Verifying SUSFS header ==="
           grep -E 'SUSFS_VERSION|susfs_is_current_proc_no_su' include/linux/susfs.h include/linux/susfs_def.h || true
-
       - name: Fix stat.c flag/flags parameter mismatch
         working-directory: kernel
         run: |
           python3 << 'PY'
           import re
           from pathlib import Path
-
           p = Path("fs/stat.c")
           text = p.read_text()
-
           call_re = re.compile(r'ksu_handle_stat\(&dfd, &fname, &(\w+)\);')
           param_re = re.compile(r'\bint\s+(flags?)\)')
-
           params = [(m.start(), m.group(1)) for m in param_re.finditer(text)]
-
           def nearest_param_name(pos):
               candidates = [pm for pm in params if pm[0] < pos]
               if not candidates:
                   return None
               return min(candidates, key=lambda pm: pos - pm[0])[1]
-
           def fix(match):
               pos = match.start()
               correct = nearest_param_name(pos)
               if correct is None:
                   return match.group(0)
               return f'ksu_handle_stat(&dfd, &fname, &{correct});'
-
           new_text = call_re.sub(fix, text)
           if new_text != text:
               p.write_text(new_text)
               print("fs/stat.c: fixed ksu_handle_stat argument name(s)")
           else:
               print("fs/stat.c: no changes made")
-
           print("=== Final call sites ===")
           for m in re.finditer(r'.*ksu_handle_stat\(&dfd, &fname, &\w+\);.*', new_text):
               print(m.group(0).strip())
           PY
-
-      - name: Verify namei.c has no leftover CONFIG_KSU_SUSFS references
+      - name: Verify namei.c SUSFS hooks
         working-directory: kernel
         run: |
           grep -n "CONFIG_KSU_SUSFS_SUS_PATH\|CONFIG_KSU_SUSFS_OPEN_REDIRECT" fs/namei.c || echo "clean"
-
       - name: Enable KSU + SUSFS in defconfig
         working-directory: kernel
         run: |
@@ -308,13 +501,11 @@ jobs:
             'CONFIG_KSU_SUSFS_OPEN_REDIRECT=y' \
             'CONFIG_OVERLAY_FS=y' \
             >> "$CFG"
-
       - name: Build Kernel with Clang
         working-directory: kernel
         run: |
           SYS_LD="$(PATH=/usr/bin:/bin command -v ld)"
           sudo ln -sf "$SYS_LD" "$HOME/tc/clang/bin/ld"
-
           export PATH="$HOME/tc/clang/bin:$HOME/tc/gcc64/bin:$HOME/tc/gcc32/bin:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
@@ -328,7 +519,6 @@ jobs:
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
-
           mkdir -p out
           make O=out lineageos_joan_defconfig
           make O=out -j$(nproc) \
@@ -337,7 +527,6 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             KCFLAGS="-Wno-error"
           test -f out/arch/arm64/boot/Image.gz-dtb
-
       - name: Pack AnyKernel3
         run: |
           git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git ak3
@@ -346,7 +535,6 @@ jobs:
           cp anykernel.sh ak3/anykernel.sh 2>/dev/null || true
           cd ak3
           zip -r9 ../AK3-LOS20-Joan_ReSukiSU-SUSFS.zip * -x '*.git*'
-
       - uses: actions/upload-artifact@v4
         with:
           name: AK3-LOS20-Joan_ReSukiSU-SUSFS
