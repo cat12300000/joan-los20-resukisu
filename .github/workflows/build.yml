@@ -36,6 +36,18 @@ jobs:
           cd kernel
           git fetch --unshallow || true
 
+      - name: Diagnose pristine namei.c before any patching
+        working-directory: kernel
+        run: |
+          echo "=== Does fs/namei.c already contain CONFIG_KSU_SUSFS_SUS_PATH before ANY of our steps run? ==="
+          grep -n "CONFIG_KSU_SUSFS_SUS_PATH\|INODE_STATE_SUS_PATH\|susfs_task_state" fs/namei.c || echo "NONE FOUND (pristine, clean)"
+          echo ""
+          echo "=== Does fs/namei.c already contain CONFIG_KSU_SUSFS_OPEN_REDIRECT before ANY of our steps run? ==="
+          grep -n "CONFIG_KSU_SUSFS_OPEN_REDIRECT\|INODE_STATE_OPEN_REDIRECT" fs/namei.c || echo "NONE FOUND (pristine, clean)"
+          echo ""
+          echo "=== git log for fs/namei.c on this branch (last 5 commits touching it) ==="
+          git log --oneline -5 -- fs/namei.c || true
+
       - name: Integrate ReSukiSU
         working-directory: kernel
         run: |
@@ -60,8 +72,11 @@ jobs:
           cp -v /tmp/susfs4ksu/kernel_patches/fs/* fs/ || true
           cp -v /tmp/susfs4ksu/kernel_patches/include/linux/* include/linux/ || true
 
-          echo "=== Applying SUSFS 4.9 patch (fuzz=3 — safe, no bad fuzzy matches) ==="
+          echo "=== Applying SUSFS 4.9 patch (fuzz=3) ==="
           patch -p1 --fuzz=3 -f < /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.9.patch || true
+
+          echo "=== Checking namei.c for stray blocks right after patch step ==="
+          grep -n "CONFIG_KSU_SUSFS_SUS_PATH\|CONFIG_KSU_SUSFS_OPEN_REDIRECT" fs/namei.c || echo "NONE FOUND"
 
           echo "=== Adding susfs.o to fs/Makefile if missing ==="
           if ! grep -q "susfs.o" fs/Makefile; then
@@ -225,8 +240,8 @@ jobs:
           echo "=== Reject files present (expected: namei.c and stat.c) ==="
           find . -name "*.rej" | sort
           echo ""
-          echo "=== Sanity: any leftover CONFIG_KSU_SUSFS_SUS_PATH block outside a function? (should be empty) ==="
-          grep -n "EXPORT_SYMBOL(page_symlink_inode_operations)" -A 6 fs/namei.c || true
+          echo "=== Full context: where do these stray blocks live NOW, right before build? ==="
+          grep -n "CONFIG_KSU_SUSFS_SUS_PATH\|CONFIG_KSU_SUSFS_OPEN_REDIRECT" fs/namei.c
 
       - name: Enable KSU + SUSFS in defconfig
         working-directory: kernel
