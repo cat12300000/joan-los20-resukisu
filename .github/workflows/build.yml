@@ -1,4 +1,4 @@
-- name: Build joan LOS20 ReSukiSU+SUSFS
+name: Build joan LOS20 ReSukiSU+SUSFS
 
 on:
   workflow_dispatch:
@@ -39,6 +39,14 @@ jobs:
         working-directory: kernel
         run: |
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s susfs-dev
+
+      - name: Apply 4.4 SUSFS inline hooks
+        working-directory: kernel
+        run: |
+          curl -LSs -o susfs_inline_hook_patches.sh \
+            https://raw.githubusercontent.com/ardhailhamkusuma9/android_kernel_lge_msm8998/res/susfs_inline_hook_patches.sh
+          chmod +x susfs_inline_hook_patches.sh
+          bash susfs_inline_hook_patches.sh || true
 
       - name: Integrate susfs4ksu core files and patchset
         working-directory: kernel
@@ -105,7 +113,7 @@ EOF
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
-          
+
           mkdir -p out
           make O=out lineageos_joan_defconfig
           make O=out -j$(nproc) \
