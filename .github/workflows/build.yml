@@ -53,9 +53,13 @@ jobs:
         run: |
           git clone --depth 1 -b kernel-4.9 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
 
-          echo "=== Copying fs/susfs.c and include/linux/susfs.h ==="
-          cp -v /tmp/susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c
-          cp -v /tmp/susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/susfs.h
+          echo "=== Contents of kernel_patches/fs and kernel_patches/include/linux (sanity check) ==="
+          ls -la /tmp/susfs4ksu/kernel_patches/fs/
+          ls -la /tmp/susfs4ksu/kernel_patches/include/linux/
+
+          echo "=== Copying ALL susfs core files, not just susfs.c/susfs.h ==="
+          cp -v /tmp/susfs4ksu/kernel_patches/fs/* fs/
+          cp -v /tmp/susfs4ksu/kernel_patches/include/linux/* include/linux/
 
           echo "=== Attempting 50_add_susfs_in_kernel-4.9.patch (fuzz allowed, not fatal) ==="
           patch -p1 --fuzz=3 -f < /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.9.patch || true
