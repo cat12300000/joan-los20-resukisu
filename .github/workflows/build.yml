@@ -16,7 +16,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git bc bison flex libssl-dev libelf-dev \
             wget curl unzip python3 python3-pip device-tree-compiler \
-            xz-utils ca-certificates build-essential
+            xz-utils ca-certificates build-essential rsync
 
       - name: Toolchains
         run: |
@@ -31,14 +31,16 @@ jobs:
 
       - name: Clone LOS 20 kernel
         run: |
-          git clone --depth 1 -b lineage-20 https://github.com/LineageOS/android_kernel_lge_msm8998.git kernel
+          git clone --depth 1 -b lineage-20 \
+            https://github.com/LineageOS/android_kernel_lge_msm8998.git kernel
           cd kernel
           git fetch --unshallow || true
 
-      - name: Integrate ReSukiSU (SUSFS-capable branch)
+      - name: Integrate ReSukiSU
         working-directory: kernel
         run: |
-          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s susfs-dev
+          # Use main (no susfs-dev branch exists)
+          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
       - name: Apply 4.4 SUSFS inline hooks
         working-directory: kernel
@@ -51,48 +53,72 @@ jobs:
       - name: Integrate susfs4ksu core files and patchset
         working-directory: kernel
         run: |
-          echo "=== Cloning susfs4ksu source repository ==="
-          git clone --depth 1 -b kernel-4.9 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
+          echo "=== Cloning susfs4ksu (kernel-4.9 is closest for 4.4) ==="
+          git clone --depth 1 -b kernel-4.9 \
+            https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
 
           echo "=== Copying SUSFS core files ==="
-          cp -v /tmp/susfs4ksu/kernel_patches/fs/* fs/
-          cp -v /tmp/susfs4ksu/kernel_patches/include/linux/* include/linux/
+          cp -v /tmp/susfs4ksu/kernel_patches/fs/* fs/ || true
+          cp -v /tmp/susfs4ksu/kernel_patches/include/linux/* include/linux/ || true
 
-          echo "=== Patching Kernel Source with SUSFS 4.9 Patch ==="
-          patch -p1 --fuzz=3 < /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.9.patch || true
+          echo "=== Applying SUSFS 4.9 patch (with high fuzz) ==="
+          patch -p1 --fuzz=5 --forward < /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.9.patch || true
 
-          echo "=== Adding susfs.o to fs/Makefile ==="
+          echo "=== Adding susfs.o to fs/Makefile if missing ==="
           if ! grep -q "susfs.o" fs/Makefile; then
-            echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
+            echo 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' >> fs/Makefile
           fi
 
-          echo "=== Verifying SUSFS Header setup ==="
-          grep -E '^#define SUSFS_VERSION' include/linux/susfs.h || echo "WARNING: SUSFS Version Header Not Found"
+          echo "=== Compatibility fix for susfs_is_current_proc_no_su ==="
+          # The inline-hooks script injects this call, but older 4.9 SUSFS
+          # may not declare it. Add a safe fallback if the symbol is missing.
+          if ! grep -q "susfs_is_current_proc_no_su" include/linux/susfs.h 2>/dev/null; then
+            cat >> include/linux/susfs.h << 'EOF'
+
+/* Compatibility for newer inline-hooks on older SUSFS */
+#ifndef susfs_is_current_proc_no_su
+static inline bool susfs_is_current_proc_no_su(void)
+{
+	return false;
+}
+#endif
+EOF
+          fi
+
+          # Ensure open.c can see the header
+          if ! grep -q "linux/susfs.h" fs/open.c; then
+            sed -i '1i #include <linux/susfs.h>' fs/open.c
+          fi
+
+          echo "=== Verifying SUSFS header ==="
+          grep -E '^#define SUSFS_VERSION' include/linux/susfs.h || \
+            echo "WARNING: SUSFS Version Header Not Found"
 
       - name: Enable KSU + SUSFS in defconfig
         working-directory: kernel
         run: |
           CFG=arch/arm64/configs/lineageos_joan_defconfig
           cat >> "$CFG" << 'EOF'
-          CONFIG_KSU=y
-          CONFIG_KSU_MANUAL_HOOK=y
-          # CONFIG_KSU_KPROBES_HOOK is not set
-          CONFIG_KSU_SUSFS=y
-          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
-          CONFIG_KSU_SUSFS_SUS_PATH=y
-          CONFIG_KSU_SUSFS_SUS_MOUNT=y
-          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
-          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
-          CONFIG_KSU_SUSFS_SUS_KSTAT=y
-          CONFIG_KSU_SUSFS_SUS_MAP=y
-          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
-          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
-          CONFIG_KSU_SUSFS_ENABLE_LOG=y
-          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
-          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
-          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
-          CONFIG_OVERLAY_FS=y
-          EOF
+CONFIG_KSU=y
+CONFIG_KSU_MANUAL_HOOK=y
+# CONFIG_KSU_KPROBES_HOOK is not set
+# CONFIG_KSU_TRACEPOINT_HOOK is not set
+CONFIG_KSU_SUSFS=y
+CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+CONFIG_KSU_SUSFS_SUS_PATH=y
+CONFIG_KSU_SUSFS_SUS_MOUNT=y
+CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+CONFIG_KSU_SUSFS_SUS_KSTAT=y
+CONFIG_KSU_SUSFS_SUS_MAP=y
+CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+CONFIG_KSU_SUSFS_ENABLE_LOG=y
+CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+CONFIG_OVERLAY_FS=y
+EOF
 
       - name: Build Kernel with Clang
         working-directory: kernel
@@ -128,6 +154,7 @@ jobs:
           git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git ak3
           rm -rf ak3/.git ak3/banner ak3/README*
           cp kernel/out/arch/arm64/boot/Image.gz-dtb ak3/
+          # Use your custom anykernel.sh if present in the repo root
           cp anykernel.sh ak3/anykernel.sh 2>/dev/null || true
           cd ak3
           zip -r9 ../AK3-LOS20-Joan_ReSukiSU-SUSFS.zip * -x '*.git*'
