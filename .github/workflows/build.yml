@@ -1,5 +1,4 @@
 name: Build joan LOS20 ReSukiSU+SUSFS
-
 on:
   workflow_dispatch:
 
@@ -35,98 +34,66 @@ jobs:
           cd kernel
           git fetch --unshallow || true
 
-      - name: Integrate ReSukiSU (SUSFS-capable branch)
+      - name: Integrate ReSukiSU
         working-directory: kernel
         run: |
-          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s susfs-dev
+          # No more "susfs-dev". Just use latest main / default.
+          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s
 
-      - name: Apply 4.4 SUSFS inline hooks
+      - name: Integrate susfs4ksu core (kernel-4.9 – closest official to 4.4)
         working-directory: kernel
         run: |
+          git clone --depth 1 -b kernel-4.9 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
+
+          echo "=== Copying SUSFS core files ==="
+          cp -v /tmp/susfs4ksu/kernel_patches/fs/* fs/
+          cp -v /tmp/susfs4ksu/kernel_patches/include/linux/* include/linux/
+
+          echo "=== Applying 50_add_susfs_in_kernel-4.9.patch ==="
+          patch -p1 --fuzz=3 -f < /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.9.patch || true
+
+          echo "=== Reject files (if any) ==="
+          find . -name "*.rej" | sort || true
+
+          echo "=== SUSFS_VERSION ==="
+          grep -E '^#define SUSFS_VERSION' include/linux/susfs.h || true
+
+      - name: Apply 4.4-compatible SUSFS inline hooks + fix new API names
+        working-directory: kernel
+        run: |
+          # Your original script (injects susfs_is_current_proc_no_su)
           curl -LSs -o susfs_inline_hook_patches.sh \
             https://raw.githubusercontent.com/ardhailhamkusuma9/android_kernel_lge_msm8998/res/susfs_inline_hook_patches.sh
           chmod +x susfs_inline_hook_patches.sh
           bash susfs_inline_hook_patches.sh || true
 
-      - name: Integrate susfs4ksu core (kernel-4.9 patchset, closest to 4.4)
-        working-directory: kernel
-        run: |
-          git clone --depth 1 -b kernel-4.9 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
+          # === CRITICAL FIX ===
+          # kernel-4.9 SUSFS only has the old name. Rewrite the new name
+          # that the inline-hook script just injected.
+          echo "=== Rewriting susfs_is_current_proc_no_su → susfs_is_current_proc_umounted ==="
+          for f in fs/open.c fs/exec.c fs/read_write.c fs/stat.c fs/namei.c \
+                   drivers/input/input.c security/selinux/hooks.c \
+                   kernel/reboot.c kernel/sys.c; do
+            if [ -f "$f" ]; then
+              sed -i 's/susfs_is_current_proc_no_su/susfs_is_current_proc_umounted/g' "$f"
+              echo "  fixed $f"
+            fi
+          done
 
-          echo "=== Copying ALL susfs core files ==="
-          cp -v /tmp/susfs4ksu/kernel_patches/fs/* fs/
-          cp -v /tmp/susfs4ksu/kernel_patches/include/linux/* include/linux/
-
-          echo "=== Attempting 50_add_susfs_in_kernel-4.9.patch (fuzz allowed, not fatal) ==="
-          patch -p1 --fuzz=3 -f < /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.9.patch || true
-
-          echo ""
-          echo "=== Reject files ==="
-          find . -name "*.rej" | sort
-
-          echo ""
-          echo "=== SUSFS_VERSION now readable? ==="
-          grep -E '^#define SUSFS_VERSION' include/linux/susfs.h || true
-
-          echo ""
-          echo "=== Every extern function declaration in include/linux/susfs.h ==="
-          grep -n "^extern" include/linux/susfs.h || echo "NONE FOUND"
-
-          echo ""
-          echo "=== Every mention of 'no_su' anywhere in susfs.h / susfs_def.h / susfs.c ==="
-          grep -n "no_su" include/linux/susfs.h include/linux/susfs_def.h fs/susfs.c || echo "NONE FOUND"
-
-          echo ""
-          echo "=== Every mention of 'unprivillege' or 'unprivileged' anywhere in susfs core files ==="
-          grep -rn "unprivilleg\|unprivileg" include/linux/susfs.h include/linux/susfs_def.h fs/susfs.c || echo "NONE FOUND"
-
-          echo ""
-          echo "=== Does fs/susfs.c define a function whose name is CLOSE to susfs_is_current_proc_no_su? ==="
-          grep -n "^bool susfs_\|^static.*susfs_is_current" fs/susfs.c | head -40 || echo "NONE FOUND"
-
-          echo ""
-          echo "=== KernelSU/kernel/feature/sucompat.h (full file — defines the macro alias) ==="
-          cat KernelSU/kernel/feature/sucompat.h || true
-
-          echo ""
-          echo "=== Does fs/open.c already #include anything ksu/susfs-related? ==="
-          grep -n "#include" fs/open.c | grep -iE "ksu|susfs" || echo "NONE FOUND"
-
-          echo ""
-          echo "=== Does any already-working file (e.g. fs/exec.c, patched earlier by inline hooks) show us the right include? ==="
-          grep -n "#include" fs/exec.c | grep -iE "ksu|susfs" || echo "NONE FOUND"
-
-          echo ""
-          echo "=== Where does ksu_is_current_proc_unprivillege actually get DEFINED (not just macro'd)? ==="
-          grep -rn "ksu_is_current_proc_unprivillege" --include="*.c" --include="*.h" . || echo "NONE FOUND"
-
-          echo ""
-          echo "=== What's the relative include path from fs/ to KernelSU/kernel/feature/sucompat.h? ==="
-          find . -iname "sucompat.h"
-
-          echo ""
-          echo "=== Is there a drivers/kernelsu symlink, and where does it point? ==="
-          ls -la drivers/kernelsu 2>&1 || true
-
-      - name: Diagnose SUSFS integration check
-        working-directory: kernel
-        run: |
-          echo "=== Kbuild check that's failing (around line 197) ==="
-          sed -n '180,210p' drivers/kernelsu/Kbuild
-          echo ""
-          echo "=== Does fs/susfs.c exist? ==="
-          ls -la fs/susfs.c 2>&1 || echo "NOT FOUND"
-          echo ""
-          echo "=== Does include/linux/susfs.h exist? ==="
-          ls -la include/linux/susfs.h 2>&1 || echo "NOT FOUND"
+          # Also fix any leftover in KernelSU sucompat if present
+          if [ -f KernelSU/kernel/feature/sucompat.h ]; then
+            sed -i 's/susfs_is_current_proc_no_su/susfs_is_current_proc_umounted/g' \
+              KernelSU/kernel/feature/sucompat.h || true
+          fi
 
       - name: Enable KSU + SUSFS in defconfig
         working-directory: kernel
         run: |
           CFG=arch/arm64/configs/lineageos_joan_defconfig
+          # Prefer SUSFS Inline Hook. Do NOT enable MANUAL_HOOK at the same time.
           cat >> "$CFG" << 'EOF'
           CONFIG_KSU=y
-          CONFIG_KSU_MANUAL_HOOK=y
+          # CONFIG_KSU_MANUAL_HOOK is not set
           # CONFIG_KSU_KPROBES_HOOK is not set
           CONFIG_KSU_SUSFS=y
           CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
@@ -152,8 +119,6 @@ jobs:
           SYS_LD="$(PATH=/usr/bin:/bin command -v ld)"
           echo "System ld resolved to: $SYS_LD"
           sudo ln -sf "$SYS_LD" "$HOME/tc/clang/bin/ld"
-          ls -la "$HOME/tc/clang/bin/ld"
-          file "$HOME/tc/clang/bin/ld"
 
           export PATH="$HOME/tc/clang/bin:$HOME/tc/gcc64/bin:$HOME/tc/gcc32/bin:$PATH"
           export ARCH=arm64
@@ -168,6 +133,7 @@ jobs:
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
+
           mkdir -p out
           make O=out lineageos_joan_defconfig
           make O=out -j$(nproc) \
@@ -175,6 +141,7 @@ jobs:
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             KCFLAGS="-Wno-error"
+
           test -f out/arch/arm64/boot/Image.gz-dtb
 
       - name: Pack AnyKernel3
