@@ -179,6 +179,46 @@ jobs:
           echo "=== Verifying SUSFS header ==="
           grep -E 'SUSFS_VERSION|susfs_is_current_proc_no_su' include/linux/susfs.h include/linux/susfs_def.h || true
 
+      - name: Fix stat.c flag/flags parameter mismatch
+        working-directory: kernel
+        run: |
+          python3 << 'PY'
+          import re
+          from pathlib import Path
+
+          p = Path("fs/stat.c")
+          text = p.read_text()
+
+          call_re = re.compile(r'ksu_handle_stat\(&dfd, &fname, &(\w+)\);')
+          param_re = re.compile(r'\bint\s+(flags?)\)')
+
+          params = [(m.start(), m.group(1)) for m in param_re.finditer(text)]
+
+          def nearest_param_name(pos):
+              candidates = [pm for pm in params if pm[0] < pos]
+              if not candidates:
+                  return None
+              return min(candidates, key=lambda pm: pos - pm[0])[1]
+
+          def fix(match):
+              pos = match.start()
+              correct = nearest_param_name(pos)
+              if correct is None:
+                  return match.group(0)
+              return f'ksu_handle_stat(&dfd, &fname, &{correct});'
+
+          new_text = call_re.sub(fix, text)
+          if new_text != text:
+              p.write_text(new_text)
+              print("fs/stat.c: fixed ksu_handle_stat argument name(s)")
+          else:
+              print("fs/stat.c: no changes made")
+
+          print("=== Final call sites ===")
+          for m in re.finditer(r'.*ksu_handle_stat\(&dfd, &fname, &\w+\);.*', new_text):
+              print(m.group(0).strip())
+          PY
+
       - name: Enable KSU + SUSFS in defconfig
         working-directory: kernel
         run: |
