@@ -1,4 +1,5 @@
 name: Build joan LOS20 ReSukiSU+SUSFS
+
 on:
   workflow_dispatch:
 
@@ -34,90 +35,61 @@ jobs:
           cd kernel
           git fetch --unshallow || true
 
-      - name: Integrate ReSukiSU
+      - name: Integrate ReSukiSU (SUSFS-capable branch)
         working-directory: kernel
         run: |
-          # No more "susfs-dev". Just use latest main / default.
-          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s
+          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s susfs-dev
 
-      - name: Integrate susfs4ksu core (kernel-4.9 – closest official to 4.4)
+      - name: Integrate susfs4ksu core files and patchset
         working-directory: kernel
         run: |
+          echo "=== Cloning susfs4ksu source repository ==="
           git clone --depth 1 -b kernel-4.9 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
 
           echo "=== Copying SUSFS core files ==="
           cp -v /tmp/susfs4ksu/kernel_patches/fs/* fs/
           cp -v /tmp/susfs4ksu/kernel_patches/include/linux/* include/linux/
 
-          echo "=== Applying 50_add_susfs_in_kernel-4.9.patch ==="
-          patch -p1 --fuzz=3 -f < /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.9.patch || true
+          echo "=== Patching Kernel Source with SUSFS 4.9 Patch ==="
+          patch -p1 --fuzz=3 < /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.9.patch || true
 
-          echo "=== Reject files (if any) ==="
-          find . -name "*.rej" | sort || true
-
-          echo "=== SUSFS_VERSION ==="
-          grep -E '^#define SUSFS_VERSION' include/linux/susfs.h || true
-
-      - name: Apply 4.4-compatible SUSFS inline hooks + fix new API names
-        working-directory: kernel
-        run: |
-          # Your original script (injects susfs_is_current_proc_no_su)
-          curl -LSs -o susfs_inline_hook_patches.sh \
-            https://raw.githubusercontent.com/ardhailhamkusuma9/android_kernel_lge_msm8998/res/susfs_inline_hook_patches.sh
-          chmod +x susfs_inline_hook_patches.sh
-          bash susfs_inline_hook_patches.sh || true
-
-          # === CRITICAL FIX ===
-          # kernel-4.9 SUSFS only has the old name. Rewrite the new name
-          # that the inline-hook script just injected.
-          echo "=== Rewriting susfs_is_current_proc_no_su → susfs_is_current_proc_umounted ==="
-          for f in fs/open.c fs/exec.c fs/read_write.c fs/stat.c fs/namei.c \
-                   drivers/input/input.c security/selinux/hooks.c \
-                   kernel/reboot.c kernel/sys.c; do
-            if [ -f "$f" ]; then
-              sed -i 's/susfs_is_current_proc_no_su/susfs_is_current_proc_umounted/g' "$f"
-              echo "  fixed $f"
-            fi
-          done
-
-          # Also fix any leftover in KernelSU sucompat if present
-          if [ -f KernelSU/kernel/feature/sucompat.h ]; then
-            sed -i 's/susfs_is_current_proc_no_su/susfs_is_current_proc_umounted/g' \
-              KernelSU/kernel/feature/sucompat.h || true
+          echo "=== Adding susfs.o to fs/Makefile ==="
+          if ! grep -q "susfs.o" fs/Makefile; then
+            echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
           fi
+
+          echo "=== Verifying SUSFS Header setup ==="
+          grep -E '^#define SUSFS_VERSION' include/linux/susfs.h || echo "WARNING: SUSFS Version Header Not Found"
 
       - name: Enable KSU + SUSFS in defconfig
         working-directory: kernel
         run: |
           CFG=arch/arm64/configs/lineageos_joan_defconfig
-          # Prefer SUSFS Inline Hook. Do NOT enable MANUAL_HOOK at the same time.
           cat >> "$CFG" << 'EOF'
-          CONFIG_KSU=y
-          # CONFIG_KSU_MANUAL_HOOK is not set
-          # CONFIG_KSU_KPROBES_HOOK is not set
-          CONFIG_KSU_SUSFS=y
-          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
-          CONFIG_KSU_SUSFS_SUS_PATH=y
-          CONFIG_KSU_SUSFS_SUS_MOUNT=y
-          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
-          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
-          CONFIG_KSU_SUSFS_SUS_KSTAT=y
-          CONFIG_KSU_SUSFS_SUS_MAP=y
-          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
-          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
-          CONFIG_KSU_SUSFS_ENABLE_LOG=y
-          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
-          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
-          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
-          CONFIG_OVERLAY_FS=y
-          EOF
-          sed -i 's/^        //' "$CFG"
+CONFIG_KSU=y
+CONFIG_KSU_MANUAL_HOOK=y
+# CONFIG_KSU_KPROBES_HOOK is not set
+CONFIG_KSU_SUSFS=y
+CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+CONFIG_KSU_SUSFS_SUS_PATH=y
+CONFIG_KSU_SUSFS_SUS_MOUNT=y
+CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+CONFIG_KSU_SUSFS_SUS_KSTAT=y
+CONFIG_KSU_SUSFS_SUS_MAP=y
+CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+CONFIG_KSU_SUSFS_ENABLE_LOG=y
+CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+CONFIG_OVERLAY_FS=y
+EOF
 
-      - name: Build
+      - name: Build Kernel with Clang
         working-directory: kernel
         run: |
           SYS_LD="$(PATH=/usr/bin:/bin command -v ld)"
-          echo "System ld resolved to: $SYS_LD"
           sudo ln -sf "$SYS_LD" "$HOME/tc/clang/bin/ld"
 
           export PATH="$HOME/tc/clang/bin:$HOME/tc/gcc64/bin:$HOME/tc/gcc32/bin:$PATH"
@@ -133,7 +105,7 @@ jobs:
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
-
+          
           mkdir -p out
           make O=out lineageos_joan_defconfig
           make O=out -j$(nproc) \
@@ -141,7 +113,6 @@ jobs:
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             KCFLAGS="-Wno-error"
-
           test -f out/arch/arm64/boot/Image.gz-dtb
 
       - name: Pack AnyKernel3
@@ -149,10 +120,9 @@ jobs:
           git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git ak3
           rm -rf ak3/.git ak3/banner ak3/README*
           cp kernel/out/arch/arm64/boot/Image.gz-dtb ak3/
-          cp anykernel.sh ak3/anykernel.sh
+          cp anykernel.sh ak3/anykernel.sh 2>/dev/null || true
           cd ak3
           zip -r9 ../AK3-LOS20-Joan_ReSukiSU-SUSFS.zip * -x '*.git*'
-          ls -lh ../AK3-LOS20-Joan_ReSukiSU-SUSFS.zip
 
       - uses: actions/upload-artifact@v4
         with:
