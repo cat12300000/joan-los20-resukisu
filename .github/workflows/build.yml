@@ -1,4 +1,4 @@
-name: Build joan LOS20 ReSukiSU+SUSFS
+- name: Build joan LOS20 ReSukiSU+SUSFS
 
 on:
   workflow_dispatch:
