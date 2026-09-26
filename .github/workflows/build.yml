@@ -510,14 +510,26 @@ jobs:
           void susfs_show_variant(void __user **user_info);
           void susfs_show_version(void __user **user_info);
           void susfs_start_sdcard_monitor_fn(void);
+          void susfs_set_current_proc_no_su(void);
+          void susfs_clear_current_proc_no_su(void);
+          void susfs_set_current_proc_umounted(void);
+          void susfs_set_current_proc_umounted_for_zygote_next(void);
+          bool susfs_is_current_proc_umounted(void);
           """
           if "susfs_add_sus_path_loop" not in h:
+              h = h.rstrip() + "\n" + proto + "\n"
+          elif "susfs_set_current_proc_no_su" not in h:
               h = h.rstrip() + "\n" + proto + "\n"
           hdr.write_text(h)
           print("susfs.h updated")
 
           src = Path("fs/susfs.c")
           s = src.read_text()
+          if "#include <linux/workqueue.h>" not in s:
+              for needle in ("#include <linux/susfs.h>", "#include <linux/fs.h>", "#include <linux/module.h>"):
+                  if needle in s:
+                      s = s.replace(needle, needle + "\n#include <linux/workqueue.h>\n#include <linux/jump_label.h>", 1)
+                      break
           impl = r'''
           /* ReSukiSU v2 ABI shims on susfs 1.5.5 / kernel 4.4 */
           void susfs_add_sus_path_loop(void __user **user_info)
@@ -577,11 +589,43 @@ jobs:
           void susfs_start_sdcard_monitor_fn(void)
           {
           }
+
+          void susfs_set_current_proc_no_su(void)
+          {
+                  current->susfs_task_state |= TASK_STRUCT_NON_ROOT_USER_APP_PROC;
+          }
+
+          void susfs_clear_current_proc_no_su(void)
+          {
+                  current->susfs_task_state &= ~TASK_STRUCT_NON_ROOT_USER_APP_PROC;
+          }
+
+          void susfs_set_current_proc_umounted(void)
+          {
+          }
+
+          void susfs_set_current_proc_umounted_for_zygote_next(void)
+          {
+          }
+
+          bool susfs_is_current_proc_umounted(void)
+          {
+                  return false;
+          }
+
+          static void susfs_run_extra_works(struct work_struct *work)
+          {
+          }
+
+          DECLARE_WORK(susfs_extra_works, susfs_run_extra_works);
+
+          struct static_key susfs_is_sdcard_android_data_not_decrypted = STATIC_KEY_INIT_TRUE;
           '''
-          if "susfs_start_sdcard_monitor_fn" not in s:
+          if "DECLARE_WORK(susfs_extra_works" not in s:
               src.write_text(s.rstrip() + "\n" + impl + "\n")
-              print("susfs.c: appended v2 shims")
+              print("susfs.c: appended v2 shims + linker stubs")
           else:
+              src.write_text(s)
               print("susfs.c: shims already present")
 
           disp = Path("drivers/kernelsu/supercall/dispatch.c")
@@ -624,10 +668,10 @@ jobs:
           t = p.read_text()
           old = "#include <sys/ioctl.h>"
           new = """#ifdef __KERNEL__
-          #include <linux/ioctl.h>
-          #else
-          #include <sys/ioctl.h>
-          #endif"""
+#include <linux/ioctl.h>
+#else
+#include <sys/ioctl.h>
+#endif"""
           if old in t and "<linux/ioctl.h>" not in t:
               p.write_text(t.replace(old, new, 1))
               print("tspdrv.h: gated sys/ioctl.h")
