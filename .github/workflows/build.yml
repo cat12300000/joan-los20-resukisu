@@ -48,6 +48,24 @@ jobs:
           chmod +x susfs_inline_hook_patches.sh
           bash susfs_inline_hook_patches.sh || true
 
+      - name: Diagnose SUSFS integration check
+        working-directory: kernel
+        run: |
+          echo "=== Kbuild check that's failing (around line 197) ==="
+          sed -n '180,210p' drivers/kernelsu/Kbuild
+          echo ""
+          echo "=== Does fs/susfs.c exist? ==="
+          ls -la fs/susfs.c 2>&1 || echo "NOT FOUND"
+          echo ""
+          echo "=== Does include/linux/susfs.h exist? ==="
+          ls -la include/linux/susfs.h 2>&1 || echo "NOT FOUND"
+          echo ""
+          echo "=== grep for susfs markers in KernelSU driver ==="
+          grep -rn "susfs" drivers/kernelsu/Kconfig | head -20
+          echo ""
+          echo "=== ReSukiSU/KernelSU Kbuild integration marker search ==="
+          grep -rln "CONFIG_KSU_SUSFS" drivers/kernelsu/ | head -20
+
       - name: Enable KSU + SUSFS in defconfig
         working-directory: kernel
         run: |
@@ -79,7 +97,11 @@ jobs:
         run: |
           # neutralize proton-clang's stale ld — it can't parse modern glibc's .relr.dyn,
           # which breaks linking HOST tools like fixdep. Redirect it to the system linker.
-          sudo ln -sf /usr/bin/ld.bfd "$HOME/tc/clang/bin/ld"
+          SYS_LD="$(command -v ld)"
+          echo "System ld resolved to: $SYS_LD"
+          sudo ln -sf "$SYS_LD" "$HOME/tc/clang/bin/ld"
+          ls -la "$HOME/tc/clang/bin/ld"
+          file "$HOME/tc/clang/bin/ld"
 
           export PATH="$HOME/tc/clang/bin:$HOME/tc/gcc64/bin:$HOME/tc/gcc32/bin:$PATH"
           export ARCH=arm64
