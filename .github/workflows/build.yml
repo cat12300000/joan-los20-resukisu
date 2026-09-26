@@ -17,19 +17,6 @@ jobs:
             wget curl unzip python3 python3-pip device-tree-compiler \
             xz-utils ca-certificates build-essential
 
-      - name: Diagnose susfs4ksu branches/patches for kernel 4.4
-        run: |
-          echo "=== All branches in simonpunk/susfs4ksu ==="
-          git ls-remote --heads https://gitlab.com/simonpunk/susfs4ksu.git | awk -F'refs/heads/' '{print $2}'
-          echo ""
-          echo "=== Branches matching 4.4 / non-GKI-looking names ==="
-          git ls-remote --heads https://gitlab.com/simonpunk/susfs4ksu.git | awk -F'refs/heads/' '{print $2}' | grep -iE '4\.4|kernel-4|non-?gki|legacy' || echo "no obvious match"
-          echo ""
-          echo "=== Cloning master to inspect kernel_patches/ layout ==="
-          git clone --depth 1 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu-master
-          find /tmp/susfs4ksu-master/kernel_patches -maxdepth 2 -type f -name "*.patch" | sort
-          find /tmp/susfs4ksu-master/kernel_patches -maxdepth 2 -type d | sort
-
       - name: Toolchains
         run: |
           mkdir -p $HOME/tc
@@ -61,6 +48,28 @@ jobs:
           chmod +x susfs_inline_hook_patches.sh
           bash susfs_inline_hook_patches.sh || true
 
+      - name: Integrate susfs4ksu core (kernel-4.9 patchset, closest to 4.4)
+        working-directory: kernel
+        run: |
+          git clone --depth 1 -b kernel-4.9 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
+
+          echo "=== Copying fs/susfs.c and include/linux/susfs.h ==="
+          cp -v /tmp/susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c
+          cp -v /tmp/susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/susfs.h
+
+          echo "=== Attempting 50_add_susfs_in_kernel-4.9.patch (fuzz allowed, not fatal) ==="
+          patch -p1 --fuzz=3 -f < /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.9.patch || true
+
+          echo ""
+          echo "=== Reject files (hunks that failed to apply) ==="
+          find . -name "*.rej" | sort
+          echo ""
+          echo "=== Reject file contents ==="
+          find . -name "*.rej" -exec echo "--- {} ---" \; -exec cat {} \;
+          echo ""
+          echo "=== SUSFS_VERSION now readable? ==="
+          grep -E '^#define SUSFS_VERSION' include/linux/susfs.h || echo "NOT FOUND"
+
       - name: Diagnose SUSFS integration check
         working-directory: kernel
         run: |
@@ -72,12 +81,6 @@ jobs:
           echo ""
           echo "=== Does include/linux/susfs.h exist? ==="
           ls -la include/linux/susfs.h 2>&1 || echo "NOT FOUND"
-          echo ""
-          echo "=== grep for susfs markers in KernelSU driver ==="
-          grep -rn "susfs" drivers/kernelsu/Kconfig | head -20
-          echo ""
-          echo "=== ReSukiSU/KernelSU Kbuild integration marker search ==="
-          grep -rln "CONFIG_KSU_SUSFS" drivers/kernelsu/ | head -20
 
       - name: Enable KSU + SUSFS in defconfig
         working-directory: kernel
@@ -108,8 +111,6 @@ jobs:
       - name: Build
         working-directory: kernel
         run: |
-          # force-resolve the REAL system ld, bypassing tc/clang/bin which $GITHUB_PATH
-          # already prepended earlier in the job for every step, not just this one.
           SYS_LD="$(PATH=/usr/bin:/bin command -v ld)"
           echo "System ld resolved to: $SYS_LD"
           sudo ln -sf "$SYS_LD" "$HOME/tc/clang/bin/ld"
