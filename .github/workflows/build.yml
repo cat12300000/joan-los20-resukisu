@@ -74,9 +74,13 @@ jobs:
           EOF
           sed -i 's/^          //' "$CFG"
 
-            - name: Build
+      - name: Build
         working-directory: kernel
         run: |
+          # neutralize proton-clang's stale ld — it can't parse modern glibc's .relr.dyn,
+          # which breaks linking HOST tools like fixdep. Redirect it to the system linker.
+          sudo ln -sf /usr/bin/ld.bfd "$HOME/tc/clang/bin/ld"
+
           export PATH="$HOME/tc/clang/bin:$HOME/tc/gcc64/bin:$HOME/tc/gcc32/bin:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
@@ -90,16 +94,15 @@ jobs:
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
-          export HOSTCC="gcc -fuse-ld=/usr/bin/ld"
           mkdir -p out
           make O=out lineageos_joan_defconfig
           make O=out -j$(nproc) \
             CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            HOSTCC="gcc -fuse-ld=/usr/bin/ld" \
             KCFLAGS="-Wno-error"
           test -f out/arch/arm64/boot/Image.gz-dtb
+
       - name: Pack AnyKernel3
         run: |
           git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git ak3
