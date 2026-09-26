@@ -48,9 +48,9 @@ jobs:
           chmod +x susfs_inline_hook_patches.sh
           bash susfs_inline_hook_patches.sh || true
 
-            - name: Integrate susfs4ksu core (kernel-4.9 patchset, closest to 4.4)
-         working-directory: kernel
-         run: |
+      - name: Integrate susfs4ksu core (kernel-4.9 patchset, closest to 4.4)
+        working-directory: kernel
+        run: |
           git clone --depth 1 -b kernel-4.9 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
 
           echo "=== Copying ALL susfs core files ==="
@@ -63,6 +63,7 @@ jobs:
           echo ""
           echo "=== Reject files ==="
           find . -name "*.rej" | sort
+
           echo ""
           echo "=== SUSFS_VERSION now readable? ==="
           grep -E '^#define SUSFS_VERSION' include/linux/susfs.h || true
@@ -82,6 +83,31 @@ jobs:
           echo ""
           echo "=== Does fs/susfs.c define a function whose name is CLOSE to susfs_is_current_proc_no_su? ==="
           grep -n "^bool susfs_\|^static.*susfs_is_current" fs/susfs.c | head -40 || echo "NONE FOUND"
+
+          echo ""
+          echo "=== KernelSU/kernel/feature/sucompat.h (full file — defines the macro alias) ==="
+          cat KernelSU/kernel/feature/sucompat.h || true
+
+          echo ""
+          echo "=== Does fs/open.c already #include anything ksu/susfs-related? ==="
+          grep -n "#include" fs/open.c | grep -iE "ksu|susfs" || echo "NONE FOUND"
+
+          echo ""
+          echo "=== Does any already-working file (e.g. fs/exec.c, patched earlier by inline hooks) show us the right include? ==="
+          grep -n "#include" fs/exec.c | grep -iE "ksu|susfs" || echo "NONE FOUND"
+
+          echo ""
+          echo "=== Where does ksu_is_current_proc_unprivillege actually get DEFINED (not just macro'd)? ==="
+          grep -rn "ksu_is_current_proc_unprivillege" --include="*.c" --include="*.h" . || echo "NONE FOUND"
+
+          echo ""
+          echo "=== What's the relative include path from fs/ to KernelSU/kernel/feature/sucompat.h? ==="
+          find . -iname "sucompat.h"
+
+          echo ""
+          echo "=== Is there a drivers/kernelsu symlink, and where does it point? ==="
+          ls -la drivers/kernelsu 2>&1 || true
+
       - name: Diagnose SUSFS integration check
         working-directory: kernel
         run: |
@@ -118,7 +144,7 @@ jobs:
           CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
           CONFIG_OVERLAY_FS=y
           EOF
-          sed -i 's/^          //' "$CFG"
+          sed -i 's/^        //' "$CFG"
 
       - name: Build
         working-directory: kernel
